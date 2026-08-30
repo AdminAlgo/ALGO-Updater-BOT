@@ -1,0 +1,34 @@
+poll_interval_seconds: 120
+team_group_chat_id: '-5228573261'
+low_hours_thresholds_minutes:
+  driver_group:
+  - 120
+  - 60
+  - 30
+  team_group: []
+disconnect_realert_minutes: 30
+disconnect_stale_minutes: 15
+shift_limit_hours: 14
+attach_log_image: true
+disconnect_alerts_enabled: false
+on_duty_alert_hours: 2
+manual_driver_tags:
+  Ali Niezov: 6424364110
+connection_required_statuses:
+- Driving
+- On Duty
+- Yard Move
+companies:
+- name: WWH INC
+  provider: factor
+  driver_group_chat_id: '-5228573261'
+  monitor_all_drivers: true
+  company_key_env: WWH_COMPANY_KEY
+- name: GOWIN EXPEDITED TRANSPORTING LLC
+  provider: leader
+  enabled: false
+  monitor_all_drivers: true
+  low_hours_closing: Please Stop within those hours, We can add hours once you leave
+    OR
+  driver_group_chat_id: '-5228573261'
+  company_key_env: GOWIN_COMPANY_KEY

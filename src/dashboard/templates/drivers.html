@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Drivers — ELD Alert Bot{% endblock %}
+{% block content %}
+<h1>Drivers</h1>
+<p>{{ coverage.tagged }} / {{ coverage.total }} tagged</p>
+
+{% for err in roster_errors %}<p class="flash-error">Roster fetch — {{ err }}</p>{% endfor %}
+
+<table>
+  <thead><tr><th>Driver</th><th>Group</th><th>Matched on</th><th>Telegram tag</th><th></th></tr></thead>
+  <tbody>
+    {% for driver_id, rec in records.items() %}
+    <tr>
+      <td>{{ rec.driver_name }}</td>
+      <td>{{ rec.title or rec.chat_id }}</td>
+      <td>{{ rec.matched_on }}</td>
+      <td>{{ ('@' ~ rec.tg_username) if rec.tg_username else (rec.tg_user_id or '—') }}</td>
+      <td>
+        <form method="post" action="{{ url_for('drivers.unregister', driver_id=driver_id) }}">
+          <button type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No driver groups registered yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<section>
+  <h2>Assign a driver to a group</h2>
+  <form method="post" action="{{ url_for('drivers.assign') }}">
+    <label>Driver
+      <select name="driver_id" id="driver_id" required>
+        {% for c in candidates %}
+        <option value="{{ c.driver_id }}">{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <input type="hidden" name="driver_name" id="driver_name">
+    <label>Telegram chat id <input type="text" name="chat_id" required></label>
+    <button type="submit">Assign</button>
+  </form>
+  <script>
+    (function () {
+      var sel = document.getElementById('driver_id');
+      var hidden = document.getElementById('driver_name');
+      function sync() {
+        var opt = sel.options[sel.selectedIndex];
+        hidden.value = opt ? opt.text : '';
+      }
+      if (sel) { sel.addEventListener('change', sync); sync(); }
+    })();
+  </script>
+</section>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Companies — ELD Alert Bot{% endblock %}
+{% block content %}
+<h1>Companies</h1>
+<table>
+  <thead><tr><th>Name</th><th>Provider</th><th>Drivers</th><th>Enabled</th><th></th></tr></thead>
+  <tbody>
+    {% for c in companies %}
+    <tr>
+      <td>{{ c.name }}</td>
+      <td>{{ c.provider }}</td>
+      <td>{{ 'ALL active' if c.monitor_all_drivers else c.drivers|length }}</td>
+      <td>{{ 'yes' if c.enabled else 'no' }}</td>
+      <td>
+        <form method="post" action="{{ url_for('companies.toggle', name=c.name) }}">
+          <button type="submit">{{ 'Disable' if c.enabled else 'Enable' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<section>
+  <h2>Add a company</h2>
+  <form method="post" action="{{ url_for('companies.new') }}">
+    <label>Name <input type="text" name="name" required></label>
+    <label>Provider
+      <select name="provider">
+        <option value="factor">factor</option>
+        <option value="leader">leader</option>
+      </select>
+    </label>
+    <label>Driver group chat id <input type="text" name="driver_group_chat_id" required></label>
+    <button type="submit">Add (disabled by default)</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Status — ELD Alert Bot{% endblock %}
+{% block content %}
+<h1>Status</h1>
+
+<section>
+  <h2>Last poll cycle</h2>
+  {% if stats %}
+  <p>At {{ last_cycle_at }}</p>
+  <ul>
+    <li>Alerts evaluated: {{ stats.alerts }}</li>
+    <li>Sent: {{ stats.sent }}</li>
+    <li>Failed: {{ stats.failed }}</li>
+    <li>Newly registered groups: {{ stats.registered }}</li>
+    <li>Provider errors: {{ stats.provider_errors }}</li>
+    {% if stats.unresolved %}<li>Unresolved drivers: {{ stats.unresolved|join(', ') }}</li>{% endif %}
+  </ul>
+  {% else %}
+  <p>No cycle has completed yet.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Driver group coverage</h2>
+  <p>{{ coverage.tagged }} / {{ coverage.total }} drivers tagged
+     ({{ coverage.by_username }} by @username, {{ coverage.by_id }} by id)</p>
+</section>
+
+<section>
+  <h2>Recent activity</h2>
+  <table>
+    <thead><tr><th>Time</th><th>Kind</th><th>Company</th><th>Driver</th><th>Audience</th><th>Result</th></tr></thead>
+    <tbody>
+      {% for e in recent %}
+      <tr class="{{ 'row-ok' if e.ok else 'row-error' }}">
+        <td>{{ e.ts }}</td><td>{{ e.kind }}</td><td>{{ e.company }}</td>
+        <td>{{ e.driver_name }}</td><td>{{ e.audience }}</td>
+        <td>{{ 'sent' if e.ok else ('failed: ' ~ e.error) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No activity recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

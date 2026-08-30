@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.git
+.env
+service.log
+service.pid
+alert_state.json
+driver_groups.json
+activity_log.json
+tokens_factor.json
+tokens_leader.json
+deploy

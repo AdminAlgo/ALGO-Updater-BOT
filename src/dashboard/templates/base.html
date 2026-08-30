@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}ELD Alert Bot{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  {% if session.get('authed') %}
+  <nav>
+    <a href="{{ url_for('status.index') }}">Status</a>
+    <a href="{{ url_for('companies.index') }}">Companies</a>
+    <a href="{{ url_for('drivers.index') }}">Drivers</a>
+    <form method="post" action="{{ url_for('auth.logout') }}" class="logout-form">
+      <button type="submit">Log out</button>
+    </form>
+  </nav>
+  {% endif %}
+  <main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flashes">
+          {% for category, message in messages %}
+            <li class="flash-{{ category }}">{{ message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

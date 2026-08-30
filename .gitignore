@@ -1,0 +1,22 @@
+# Secrets — never commit
+.env
+
+# Runtime state (alert de-dup store + per-driver group registry)
+alert_state.json
+driver_groups.json
+activity_log.json
+tokens_factor.json
+tokens_leader.json
+service.log
+service.pid
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env.local
+
+# Claude Code local (machine-specific) settings
+.claude/settings.local.json
