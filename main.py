@@ -9,6 +9,7 @@ Usage:
     python main.py --run --dry-run  # continuous loop, print instead of sending
     python main.py --run            # continuous service: poll + SEND every cycle
     python main.py --serve          # scheduler (background) + admin dashboard (foreground)
+    python main.py --chats          # print every Telegram chat the bot can currently see
 
 Layer 5 adds the scheduler: a continuous poll loop that commits de-dup state
 only after a successful send, isolates per-cycle errors, and stops cleanly on
@@ -275,6 +276,47 @@ def discover(config: Config) -> int:
     return 0
 
 
+def chats(config: Config) -> int:
+    """Print every Telegram chat the bot can currently see (id, type, title).
+
+    Non-destructive: reads pending updates with offset 0, so it never acks them
+    (the scheduler / --discover still see the same updates). Send a message in a
+    group AFTER adding the bot, then run this to copy that group's chat id into
+    config.yaml.
+    """
+    sender = _make_sender(config, dry_run=False)
+    if sender is None:
+        return 1
+    tok = sender.check_token()
+    if not tok.ok:
+        print(f"token check FAILED — {tok.error}", file=sys.stderr)
+        return 1
+    print(f"bot: {tok.kind}")
+
+    updates = sender.get_updates(offset=0)
+    if not updates:
+        print(
+            "\nNo chats visible. Add the bot to the group, then send any message "
+            "in that group (or type /admin), and run this again."
+        )
+        return 1
+
+    seen: dict[str, dict] = {}
+    for u in updates:
+        for key in ("message", "my_chat_member", "edited_message", "channel_post"):
+            chat = (u.get(key) or {}).get("chat")
+            if chat and str(chat.get("id")) not in seen:
+                seen[str(chat["id"])] = chat
+
+    print(f"\n{len(seen)} chat(s) the bot can see:")
+    for cid, chat in seen.items():
+        title = chat.get("title") or chat.get("username") or chat.get("first_name") or "?"
+        print(f"  chat_id: {cid:>16}   type: {chat.get('type'):12}   {title}")
+    print("\nPut the group's chat_id into config.yaml "
+          "(team_group_chat_id / a company's driver_group_chat_id).")
+    return 0
+
+
 def run_dashboard(config: Config) -> int:
     """Start the scheduler on a background thread + serve the admin dashboard.
 
@@ -359,6 +401,8 @@ def main(argv: list[str]) -> int:
         return run_service(config, dry_run="--dry-run" in argv)
     if "--discover" in argv:
         return discover(config)
+    if "--chats" in argv:
+        return chats(config)
     if "--serve" in argv:
         return run_dashboard(config)
     return 0

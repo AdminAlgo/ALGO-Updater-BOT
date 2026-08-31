@@ -5,12 +5,14 @@ low_hours_thresholds_minutes:
   - 120
   - 60
   - 30
-  team_group: []
+  team_group:
+  - 60
+  - 30
 disconnect_realert_minutes: 30
 disconnect_stale_minutes: 15
 shift_limit_hours: 14
 attach_log_image: true
-disconnect_alerts_enabled: false
+disconnect_alerts_enabled: true
 on_duty_alert_hours: 2
 manual_driver_tags:
   Ali Niezov: 6424364110
@@ -26,7 +28,7 @@ companies:
   company_key_env: WWH_COMPANY_KEY
 - name: GOWIN EXPEDITED TRANSPORTING LLC
   provider: leader
-  enabled: false
+  enabled: true
   monitor_all_drivers: true
   low_hours_closing: Please Stop within those hours, We can add hours once you leave
     OR
