@@ -21,10 +21,14 @@ Uses only the standard library (urllib) — no extra dependencies.
 from __future__ import annotations
 
 import json
+import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+
+log = logging.getLogger("eld_alert_bot")
 
 from .base import (
     ConnectionState,
@@ -61,6 +65,10 @@ def _parse_timestamp(value: str | None) -> datetime | None:
 class FactorELD(ELDProvider):
     name = "factor"
 
+    #: how many times to retry a 429 before giving up, and the base backoff.
+    _MAX_RETRIES = 3
+    _BACKOFF_BASE = 3.0
+
     def __init__(
         self,
         provider_key: str,
@@ -86,21 +94,44 @@ class FactorELD(ELDProvider):
         }
 
     def _get(self, path: str, params: dict | None = None) -> dict:
-        """GET one page and return the parsed ResponseV2 envelope."""
+        """GET one page and return the parsed ResponseV2 envelope.
+
+        Retries HTTP 429 (rate limit) with backoff, honouring a Retry-After
+        header when present — one provider key is shared by every company plus
+        the dashboard, so short bursts over the limit are expected. Other errors
+        raise immediately.
+        """
         query = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
         url = f"{self._base_url}{path}" + (f"?{query}" if query else "")
 
-        req = urllib.request.Request(url, headers=self._headers(), method="GET")
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                body = resp.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:300]
-            if exc.code == 401:
-                raise Unauthorized(f"{self.name}: HTTP 401 for {path} — {detail}") from exc
-            raise ELDError(f"{self.name}: HTTP {exc.code} for {path} — {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ELDError(f"{self.name}: network error for {path} — {exc.reason}") from exc
+        body: str | None = None
+        for attempt in range(self._MAX_RETRIES + 1):
+            req = urllib.request.Request(url, headers=self._headers(), method="GET")
+            try:
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                    body = resp.read().decode("utf-8")
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+                if exc.code == 401:
+                    raise Unauthorized(f"{self.name}: HTTP 401 for {path} — {detail}") from exc
+                if exc.code == 429 and attempt < self._MAX_RETRIES:
+                    try:
+                        wait = float(exc.headers.get("Retry-After", ""))
+                    except (TypeError, ValueError):
+                        wait = self._BACKOFF_BASE * (2 ** attempt)
+                    wait = min(max(wait, 1.0), 60.0)
+                    log.warning("%s: HTTP 429 for %s — retry %d/%d in %.0fs",
+                                self.name, path, attempt + 1, self._MAX_RETRIES, wait)
+                    time.sleep(wait)
+                    continue
+                raise ELDError(f"{self.name}: HTTP {exc.code} for {path} — {detail}") from exc
+            except urllib.error.URLError as exc:
+                raise ELDError(f"{self.name}: network error for {path} — {exc.reason}") from exc
+
+        if body is None:  # exhausted retries on 429
+            raise ELDError(f"{self.name}: HTTP 429 for {path} — rate limit, gave up "
+                           f"after {self._MAX_RETRIES} retries")
 
         try:
             envelope = json.loads(body)

@@ -37,7 +37,7 @@ class CycleStats:
 
 
 def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
-              activity_log=None, discover: bool = True) -> CycleStats:
+              activity_log=None, discover: bool = True, roster_cache=None) -> CycleStats:
     """Execute one polling cycle. Returns stats; persists state at the end.
 
     Order: fetch all snapshots → (registry) discover/match driver groups from
@@ -69,6 +69,10 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
             log.warning("%s: unresolved driver names: %s",
                         company.name, ", ".join(result.unresolved_names))
         fetched.append((company, result))
+        # Share this fetch with the command loop + dashboard so they don't each
+        # hit DriveHOS on the same provider key.
+        if roster_cache is not None:
+            roster_cache.prime(company.name, result.snapshots)
 
     # 2) Group auto-discovery: match new Telegram groups to drivers.
     #    Skipped when a dedicated command loop owns Telegram polling.
@@ -124,7 +128,8 @@ def run_forever(config, sender, state, *, registry=None,
                 cycle_lock=None,
                 stop_event: threading.Event | None = None,
                 max_cycles: int | None = None,
-                discover: bool = True) -> None:
+                discover: bool = True,
+                roster_cache=None) -> None:
     """Loop run_cycle every poll_interval_seconds until stopped.
 
     stop_event : set it to request a graceful stop (also wired to SIGINT/SIGTERM).
@@ -168,7 +173,8 @@ def run_forever(config, sender, state, *, registry=None,
                     log.exception("config reload failed — keeping previous cycle's config")
             with (cycle_lock or contextlib.nullcontext()):
                 stats = run_cycle(config, sender, state, registry=registry,
-                                   activity_log=activity_log, discover=discover)
+                                   activity_log=activity_log, discover=discover,
+                                   roster_cache=roster_cache)
             if on_cycle is not None:
                 on_cycle(stats)
             cov = registry.coverage() if registry is not None else {"tagged": 0, "total": 0}

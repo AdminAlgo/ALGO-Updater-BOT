@@ -16,6 +16,7 @@ from datetime import datetime
 from src.activity_log import ActivityLog
 from src.config import Config, load_config
 from src.registry import GroupRegistry
+from src.roster_cache import RosterCache
 from src.state import AlertState
 
 
@@ -26,6 +27,7 @@ class RuntimeContext:
     registry: GroupRegistry
     state: AlertState
     activity_log: ActivityLog
+    roster_cache: RosterCache | None = None
     lock: threading.RLock = field(default_factory=threading.RLock)
     last_cycle_stats: object | None = None
     last_cycle_at: datetime | None = None

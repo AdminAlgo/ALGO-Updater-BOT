@@ -54,6 +54,25 @@ def _setup_logging() -> None:
     )
 
 
+def _warn_if_data_dir_ephemeral() -> None:
+    """Loud warning if DATA_DIR looks like a container volume path but isn't a
+    real mount — i.e. every redeploy silently wipes registrations + de-dup."""
+    if DATA_DIR in (".", "", "./") or not os.path.isabs(DATA_DIR):
+        return  # local dev
+    try:
+        mounted = os.path.ismount(DATA_DIR)
+    except OSError:
+        mounted = False
+    if not mounted:
+        logging.warning(
+            "=" * 70 + "\n"
+            "  DATA_DIR=%s is NOT a mounted volume. Registered driver groups,\n"
+            "  de-dup state and the activity log will be LOST on every redeploy.\n"
+            "  On Railway: Settings -> Volumes -> add a volume at %s\n"
+            + "=" * 70, DATA_DIR, DATA_DIR,
+        )
+
+
 def _make_sender(config: Config, dry_run: bool) -> TelegramSender | None:
     try:
         return TelegramSender(config.secrets.telegram_bot_token, dry_run=dry_run)
@@ -67,13 +86,12 @@ def _fmt_minutes(values: list[int]) -> str:
 
 
 def _start_command_loop(config: Config, sender, registry: GroupRegistry,
-                        *, lock=None, stop_event=None) -> threading.Thread:
+                        roster: RosterCache, *, lock=None, stop_event=None) -> threading.Thread:
     """Start the fast Telegram command/discovery loop on a daemon thread.
 
     It becomes the sole getUpdates consumer, so callers must run the scheduler
-    with discover=False.
+    with discover=False. `roster` is shared with the scheduler + dashboard.
     """
-    roster = RosterCache(load_config, ttl_seconds=300)
     thread = threading.Thread(
         target=run_command_loop,
         kwargs=dict(
@@ -249,6 +267,8 @@ def notify(config: Config, dry_run: bool) -> int:
 def run_service(config: Config, dry_run: bool) -> int:
     """Start the continuous scheduler loop (Ctrl+C to stop)."""
     _setup_logging()
+    if not dry_run:
+        _warn_if_data_dir_ephemeral()
     sender = _make_sender(config, dry_run)
     if sender is None:
         return 1
@@ -266,12 +286,14 @@ def run_service(config: Config, dry_run: bool) -> int:
     # respond in ~1-2s; the scheduler then skips its own getUpdates step. The
     # command loop is the sole registry writer here, so it needs no shared lock;
     # the scheduler only reads the registry (iteration-safe).
+    roster = RosterCache(load_config)
     command_loop = not dry_run
     if command_loop:
-        _start_command_loop(config, sender, registry, lock=threading.RLock())
+        _start_command_loop(config, sender, registry, roster, lock=threading.RLock())
 
     run_forever(config, sender, state, registry=registry,
-                activity_log=activity_log, discover=not command_loop)
+                activity_log=activity_log, discover=not command_loop,
+                roster_cache=roster)
     return 0
 
 
@@ -355,6 +377,7 @@ def run_dashboard(config: Config) -> int:
     Requires DASHBOARD_ADMIN_PASSWORD + DASHBOARD_SECRET_KEY in the environment.
     """
     _setup_logging()
+    _warn_if_data_dir_ephemeral()
     sender = _make_sender(config, dry_run=False)
     if sender is None:
         return 1
@@ -379,9 +402,11 @@ def run_dashboard(config: Config) -> int:
     state = AlertState(STATE_FILE)
     registry = GroupRegistry(REGISTRY_FILE)
     activity_log = ActivityLog(ACTIVITY_LOG_FILE)
+    roster = RosterCache(load_config)
     runtime = RuntimeContext(
         config_path="config.yaml", env_path=".env",
         registry=registry, state=state, activity_log=activity_log,
+        roster_cache=roster,
     )
 
     def _on_cycle(stats):
@@ -393,7 +418,7 @@ def run_dashboard(config: Config) -> int:
         target=run_forever,
         kwargs=dict(
             config=config, sender=sender, state=state, registry=registry,
-            activity_log=activity_log,
+            activity_log=activity_log, roster_cache=roster,
             config_loader=load_config, on_cycle=_on_cycle,
             stop_event=stop_event, discover=False,
         ),
@@ -405,7 +430,7 @@ def run_dashboard(config: Config) -> int:
     # runtime.lock with the dashboard's registry edits; the scheduler only reads
     # the registry (discover=False), so it holds no lock during a cycle and a
     # command never waits on a DriveHOS fetch.
-    _start_command_loop(config, sender, registry, lock=runtime.lock,
+    _start_command_loop(config, sender, registry, roster, lock=runtime.lock,
                         stop_event=stop_event)
 
     app = create_app(runtime)

@@ -10,9 +10,19 @@ bp = Blueprint("drivers", __name__, url_prefix="/drivers")
 
 
 def _live_candidates(runtime):
-    """Best-effort live roster fetch, for the manual-assign dropdown. Mirrors
-    the same per-company fetch main.py's eld_check() does; errors here are
-    shown as a banner rather than failing the whole page."""
+    """Roster for the manual-assign dropdown.
+
+    Reads the shared RosterCache (primed by the scheduler every cycle) so
+    opening this page does NOT fire its own DriveHOS fetch — the provider key is
+    shared and uncoordinated fetches trip the rate limit. Falls back to a direct
+    fetch only if no cache is wired.
+    """
+    cache = getattr(runtime, "roster_cache", None)
+    if cache is not None:
+        cands = cache.get()
+        errors = [cache.last_error] if cache.last_error else []
+        return [{"driver_id": c.driver_id, "name": c.name} for c in cands], errors
+
     config = runtime.current_config()
     candidates: list[dict] = []
     errors: list[str] = []
