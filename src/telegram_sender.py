@@ -147,6 +147,21 @@ class TelegramSender:
             time.sleep(self._delay)
         return SendResult(ok=True, chat_id=chat_id, kind=kind)
 
+    def set_my_commands(self, commands: list[tuple[str, str]]) -> bool:
+        """Register the slash-command menu shown in Telegram's compose box.
+
+        `commands` is [(name_without_slash, description), ...]. Best-effort: a
+        failure is logged by the caller, not raised.
+        """
+        if self.dry_run:
+            return True
+        payload = {"commands": [{"command": c, "description": d} for c, d in commands]}
+        try:
+            body = self._post("setMyCommands", payload)
+        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+            return False
+        return bool(body.get("ok"))
+
     def get_updates(self, offset: int = 0, timeout: int = 0) -> list[dict]:
         """Long-poll getUpdates for commands + group registration. Returns update
         dicts. Only requests message / my_chat_member updates. Returns [] on

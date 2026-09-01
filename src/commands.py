@@ -33,6 +33,21 @@ log = logging.getLogger("eld_alert_bot")
 
 _CHAT_ID_CHARS = set("-0123456789")
 
+# Slash-command menu shown in Telegram's compose box (setMyCommands).
+_BOT_COMMANDS = [
+    ("faq", "How the alerts work — what, when, to whom"),
+    ("roster", "Find a driver: /roster <name or truck>"),
+    ("groups", "Every group I'm in + who it's assigned to"),
+    ("assign", "Assign a driver: /assign <name> | <group-id>"),
+    ("unassign", "Remove a driver's group: /unassign <name>"),
+    ("whois", "Who a group is assigned to: /whois <group-id>"),
+    ("unassigned", "Groups still waiting to be assigned"),
+    ("coverage", "@-tag coverage summary"),
+    ("add", "In a driver's group: /add <name>"),
+    ("remove", "In a driver's group: /remove <name>"),
+    ("help", "Show the admin controls"),
+]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -104,7 +119,66 @@ def _help_text() -> str:
         "  /unassign <name> — remove a driver's group\n"
         "  /whois <group-id> — who a group is assigned to\n"
         "  /unassigned — groups still waiting to be assigned\n"
-        "  /coverage — @-tag coverage summary"
+        "  /coverage — @-tag coverage summary\n"
+        "  /faq — how the alerts work (what, when, to whom)"
+    )
+
+
+def _faq_text() -> str:
+    """Plain-text reference of the alert logic — served by /faq and kept in
+    sync with rules.py + config.yaml. Stays under Telegram's 4096-char limit."""
+    return (
+        "📖 ALGO Updater — how the alerts work\n"
+        "———————————————————————\n"
+        "I pull live Hours-of-Service data for every active driver every "
+        "2 minutes and re-check every rule. Commands you send me are answered "
+        "in 1–2 seconds.\n\n"
+
+        "1) LOW HOURS — driver is running out of time\n"
+        "• Fires when the tightest of Drive / Break / Shift time-remaining drops "
+        "to 2 h, then 1 h, then 30 min left.\n"
+        "• → the driver's own group. The dispatch/team group also gets the 1 h "
+        "and 30 min warnings.\n"
+        "• Each level sends once per shift; resets after a reset/recap or when "
+        "the driver goes Off Duty.\n"
+        "• Only while Driving / On Duty / Yard Move.\n\n"
+
+        "2) 14-HOUR SHIFT LIMIT — violation\n"
+        "• Fires the moment Shift time-remaining hits 0 while on duty.\n"
+        "• → the dispatch/team group (escalation). Once per violation.\n\n"
+
+        "3) ELD DISCONNECTED — device offline while working\n"
+        "• Fires when the truck is OFFLINE or has not reported for 15 min, "
+        "while the driver is Driving / On Duty / Yard Move.\n"
+        "• → the driver's group. Repeats every 30 min until reconnected.\n"
+        "• Never off duty, in sleeper, or with no truck paired.\n\n"
+
+        "4) LONG ON-DUTY — welfare check\n"
+        "• Fires when a driver is On Duty (not driving) for 2 h straight.\n"
+        "• → the driver's group. Once per On-Duty stretch.\n\n"
+
+        "WHAT DOES NOT ALERT\n"
+        "• Off-duty / sleeper drivers (resting).\n"
+        "• A driver who just came On Duty with a fresh shift (no false 14 h).\n"
+        "• A driver with no group assigned — only the 14 h violation (which "
+        "goes to the team group) would still fire for them.\n"
+        "• A disabled company.\n\n"
+
+        "TIMING & REPEATS\n"
+        "• Alerts from one check go out back-to-back (~0.05 s apart).\n"
+        "• Nothing repeats unless the condition clears and happens again — "
+        "except Disconnect, which re-pings every 30 min.\n\n"
+
+        "MESSAGE STYLE\n"
+        "• “Assalomu alaykum. / Dear <name> / <the issue> / <closing line> / "
+        "Thank you.” The driver is @-mentioned when their handle is known, and a "
+        "PNG card (Break/Drive/Shift/Cycle gauges + name + truck + duty status) "
+        "is attached.\n\n"
+
+        "CURRENT SETTINGS\n"
+        "check every 120 s · shift limit 14 h · low-hours driver 120/60/30 min · "
+        "low-hours team 60/30 min · disconnect stale 15 min · disconnect re-alert "
+        "30 min · long on-duty 2 h · log image ON · disconnect alerts ON"
     )
 
 
@@ -223,6 +297,10 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
 
     if cmd in ("/help", "/admin", "/start"):
         say(_help_text() if is_admin else "This bot is for authorised dispatchers only.")
+        return True
+
+    if cmd in ("/faq", "/logic", "/rules"):
+        say(_faq_text())
         return True
 
     if not is_admin and cmd in _ADMIN_CMDS:
@@ -441,6 +519,8 @@ def run_command_loop(sender, registry: GroupRegistry, roster_cache, *,
     roster_cache.RosterCache (memory-served, refreshed on its own TTL).
     """
     stop = stop_event or threading.Event()
+    if sender.set_my_commands(_BOT_COMMANDS):
+        log.info("registered %d bot commands with Telegram", len(_BOT_COMMANDS))
     log.info("command loop started — long-poll %ds", poll_timeout)
     while not stop.is_set():
         started = time.monotonic()

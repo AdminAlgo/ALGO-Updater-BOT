@@ -80,6 +80,17 @@ class CommandTests(unittest.TestCase):
         cmd = text.split()[0].split("@")[0].lower()
         return _handle_command(cmd, text, chat, self.snd, self.reg, ROSTER, is_admin=True)
 
+    def test_faq_is_available_to_everyone(self):
+        for is_admin in (True, False):
+            snd = FakeSender()
+            handled = _handle_command("/faq", "/faq", {"id": 1, "type": "private"},
+                                      snd, self.reg, ROSTER, is_admin=is_admin)
+            self.assertTrue(handled)
+            body = snd.last()
+            self.assertIn("LOW HOURS", body)
+            self.assertIn("14-HOUR SHIFT LIMIT", body)
+            self.assertLess(len(body), 4096)
+
     def test_non_admin_is_refused(self):
         cmd = "/groups"
         handled = _handle_command(cmd, "/groups", {"id": 1, "type": "private"},
