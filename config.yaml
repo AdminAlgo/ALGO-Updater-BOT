@@ -23,8 +23,9 @@ connection_required_statuses:
 companies:
 - name: WWH INC
   provider: factor
-  driver_group_chat_id: '-5228573261'
+  enabled: true
   monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
   company_key_env: WWH_COMPANY_KEY
 - name: GOWIN EXPEDITED TRANSPORTING LLC
   provider: leader
@@ -34,3 +35,69 @@ companies:
     OR
   driver_group_chat_id: '-5228573261'
   company_key_env: GOWIN_COMPANY_KEY
+- name: MNK EXPRESS INC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: MNK_EXPRESS_COMPANY_KEY
+- name: KSA KG LLC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: KSA_KG_COMPANY_KEY
+- name: BRATAN LLC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: BRATAN_COMPANY_KEY
+- name: MIZUNO LLC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: MIZUNO_COMPANY_KEY
+- name: JMJMN ENTERPRISE LLC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: JMJMN_COMPANY_KEY
+- name: EAGLE LOGISTICS INC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: EAGLE_LOGISTICS_COMPANY_KEY
+- name: ONWAY LOGISTICS INC
+  provider: leader
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: ONWAY_LOGISTICS_COMPANY_KEY
+- name: FREE FALCON INC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: FREE_FALCON_COMPANY_KEY
+- name: LBJ LOGISTICS LLC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: LBJ_LOGISTICS_COMPANY_KEY
+- name: AMZ TRANSPORT LLC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: AMZ_TRANSPORT_COMPANY_KEY
+- name: ZOHA LLC
+  provider: leader
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: ZOHA_COMPANY_KEY
