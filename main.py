@@ -28,10 +28,12 @@ import threading
 from datetime import datetime, timezone
 
 from src.activity_log import ActivityLog
+from src.commands import run_command_loop
 from src.config import Config, ConfigError, load_config, mask_chat_id, mask_secret
 from src.eld import ELDError, build_provider
 from src.rules import evaluate_company
 from src.registry import GroupRegistry
+from src.roster_cache import RosterCache
 from src.scheduler import run_cycle, run_forever
 from src.state import AlertState
 from src.telegram_sender import TelegramSender
@@ -62,6 +64,26 @@ def _make_sender(config: Config, dry_run: bool) -> TelegramSender | None:
 
 def _fmt_minutes(values: list[int]) -> str:
     return ", ".join(f"{v}m" for v in values)
+
+
+def _start_command_loop(config: Config, sender, registry: GroupRegistry,
+                        *, lock=None, stop_event=None) -> threading.Thread:
+    """Start the fast Telegram command/discovery loop on a daemon thread.
+
+    It becomes the sole getUpdates consumer, so callers must run the scheduler
+    with discover=False.
+    """
+    roster = RosterCache(load_config, ttl_seconds=300)
+    thread = threading.Thread(
+        target=run_command_loop,
+        kwargs=dict(
+            sender=sender, registry=registry, roster_cache=roster,
+            admin_user_ids=config.admin_user_ids, lock=lock, stop_event=stop_event,
+        ),
+        daemon=True, name="command-loop",
+    )
+    thread.start()
+    return thread
 
 
 def print_summary(config: Config) -> None:
@@ -239,8 +261,17 @@ def run_service(config: Config, dry_run: bool) -> int:
     state = AlertState() if dry_run else AlertState(STATE_FILE)
     registry = GroupRegistry(REGISTRY_FILE)
     activity_log = ActivityLog(None if dry_run else ACTIVITY_LOG_FILE)
+
+    # Live mode: a dedicated thread long-polls Telegram so commands/assignment
+    # respond in ~1-2s; the scheduler then skips its own getUpdates step. The
+    # command loop is the sole registry writer here, so it needs no shared lock;
+    # the scheduler only reads the registry (iteration-safe).
+    command_loop = not dry_run
+    if command_loop:
+        _start_command_loop(config, sender, registry, lock=threading.RLock())
+
     run_forever(config, sender, state, registry=registry,
-                activity_log=activity_log)
+                activity_log=activity_log, discover=not command_loop)
     return 0
 
 
@@ -364,11 +395,18 @@ def run_dashboard(config: Config) -> int:
             config=config, sender=sender, state=state, registry=registry,
             activity_log=activity_log,
             config_loader=load_config, on_cycle=_on_cycle,
-            cycle_lock=runtime.lock, stop_event=stop_event,
+            stop_event=stop_event, discover=False,
         ),
         daemon=True, name="scheduler",
     )
     scheduler_thread.start()
+
+    # Fast Telegram command/assignment loop — sole getUpdates consumer. Shares
+    # runtime.lock with the dashboard's registry edits; the scheduler only reads
+    # the registry (discover=False), so it holds no lock during a cycle and a
+    # command never waits on a DriveHOS fetch.
+    _start_command_loop(config, sender, registry, lock=runtime.lock,
+                        stop_event=stop_event)
 
     app = create_app(runtime)
     port = int(os.environ.get("PORT", 8000))

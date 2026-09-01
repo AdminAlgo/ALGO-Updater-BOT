@@ -60,13 +60,13 @@ class TelegramSender:
             )
 
     # ------------------------------------------------------------------ #
-    def _post(self, method: str, payload: dict) -> dict:
+    def _post(self, method: str, payload: dict, read_timeout: float | None = None) -> dict:
         url = f"{TELEGRAM_API}/bot{self._token}/{method}"
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+        with urllib.request.urlopen(req, timeout=read_timeout or self._timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     def send_message(self, chat_id: str, text: str, kind: str = "",
@@ -148,10 +148,12 @@ class TelegramSender:
         return SendResult(ok=True, chat_id=chat_id, kind=kind)
 
     def get_updates(self, offset: int = 0, timeout: int = 0) -> list[dict]:
-        """Long-poll getUpdates for group registration. Returns update dicts.
+        """Long-poll getUpdates for commands + group registration. Returns update
+        dicts. Only requests message / my_chat_member updates. Returns [] on
+        error or in dry-run.
 
-        Only requests message / my_chat_member updates (enough to learn a
-        group's id + title). Returns [] on error or in dry-run.
+        With ``timeout`` > 0 Telegram holds the connection open that many seconds
+        waiting for an update, so the HTTP read timeout is extended past it.
         """
         if self.dry_run:
             return []
@@ -160,9 +162,10 @@ class TelegramSender:
             "timeout": timeout,
             "allowed_updates": ["message", "my_chat_member"],
         }
+        read_timeout = (timeout + self._timeout) if timeout else self._timeout
         try:
-            body = self._post("getUpdates", payload)
-        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError):
+            body = self._post("getUpdates", payload, read_timeout=read_timeout)
+        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
             return []
         return body.get("result", []) if body.get("ok") else []
 

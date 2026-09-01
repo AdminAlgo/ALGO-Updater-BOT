@@ -34,6 +34,7 @@ class Candidate:
     name: str
     username: str | None = None
     truck: str | None = None
+    company: str | None = None
 
 
 def match_title(title: str, candidates: list[Candidate]) -> tuple[str | None, str | None]:
@@ -85,6 +86,40 @@ def match_drivers(title: str, candidates: list[Candidate]) -> list[tuple[str, st
             if c.username and normalize_name(c.username) in t]
 
 
+def match_unique(title: str, candidates: list[Candidate]) -> tuple[str | None, str | None, str]:
+    """Strict match for safe auto-registration at scale.
+
+    Only returns a driver when the title identifies EXACTLY ONE of them, in a
+    single tier (name / truck / username). Anything ambiguous (two drivers named
+    in the title, two "John Smith"s on the roster) returns (None, None, reason)
+    so a human confirms it instead. The third value is a short reason string for
+    logging / the review queue.
+    """
+    t = normalize_name(title)
+    if not t:
+        return None, None, "empty title"
+
+    by_name = [c for c in candidates if c.name and normalize_name(c.name) in t]
+    if len(by_name) == 1:
+        return by_name[0].driver_id, "name", "unique name"
+    if len(by_name) > 1:
+        names = ", ".join(sorted(c.name for c in by_name))
+        return None, None, f"ambiguous — title names {len(by_name)} drivers ({names})"
+
+    by_truck = [c for c in candidates
+                if c.truck and re.search(rf"(?<!\d){re.escape(str(c.truck))}(?!\d)", t)]
+    if len(by_truck) == 1:
+        return by_truck[0].driver_id, "truck", "unique truck number"
+    if len(by_truck) > 1:
+        return None, None, f"ambiguous — truck number matches {len(by_truck)} drivers"
+
+    by_user = [c for c in candidates if c.username and normalize_name(c.username) in t]
+    if len(by_user) == 1:
+        return by_user[0].driver_id, "username", "unique username"
+
+    return None, None, "no confident match"
+
+
 class GroupRegistry:
     def __init__(self, path: str | Path | None = None) -> None:
         self._path = Path(path) if path else None
@@ -94,6 +129,14 @@ class GroupRegistry:
         # until /add re-enables (otherwise a matching group title would silently
         # re-register them on the next message).
         self._blocked: set[str] = set()
+        # Every group/supergroup the bot has been added to or seen a message in,
+        # keyed by str(chat_id): {"title", "first_seen", "last_seen"}. This is the
+        # pool of assignable targets — independent of whether a driver is matched.
+        self._groups: dict[str, dict] = {}
+        # Groups the bot joined that could not be auto-matched to exactly one
+        # driver: {chat_id: {"title", "reason", "seen"}}. Surfaced by /unassigned
+        # and the dashboard for a human to resolve.
+        self._pending: dict[str, dict] = {}
         if self._path and self._path.exists():
             self.load()
 
@@ -103,8 +146,11 @@ class GroupRegistry:
             self._offset = int(data.get("offset", 0))
             self._drivers = data.get("drivers", {}) or {}
             self._blocked = set(data.get("blocked", []) or [])
+            self._groups = data.get("groups", {}) or {}
+            self._pending = data.get("pending", {}) or {}
         except (json.JSONDecodeError, OSError, ValueError):
             self._offset, self._drivers, self._blocked = 0, {}, set()
+            self._groups, self._pending = {}, {}
 
     def save(self) -> None:
         if self._path:
@@ -112,10 +158,60 @@ class GroupRegistry:
             temporary = self._path.with_name(f".{self._path.name}.tmp")
             temporary.write_text(
                 json.dumps({"offset": self._offset, "drivers": self._drivers,
-                            "blocked": sorted(self._blocked)}, indent=2),
+                            "blocked": sorted(self._blocked),
+                            "groups": self._groups, "pending": self._pending},
+                           indent=2),
                 "utf-8",
             )
             temporary.replace(self._path)
+
+    # --- known groups (assignable targets) --- #
+    def record_group(self, chat_id, title: str, when: str) -> None:
+        """Note that the bot can see this group. Idempotent; refreshes title."""
+        cid = str(chat_id)
+        rec = self._groups.get(cid)
+        if rec is None:
+            self._groups[cid] = {"title": title or "", "first_seen": when, "last_seen": when}
+        else:
+            if title:
+                rec["title"] = title
+            rec["last_seen"] = when
+
+    def known_groups(self) -> dict[str, dict]:
+        return dict(self._groups)
+
+    def group_title(self, chat_id) -> str | None:
+        rec = self._groups.get(str(chat_id))
+        return rec.get("title") if rec else None
+
+    def forget_group(self, chat_id) -> None:
+        """Bot was removed from the group — drop it from the assignable pool."""
+        cid = str(chat_id)
+        self._groups.pop(cid, None)
+        self._pending.pop(cid, None)
+
+    # --- pending (needs-a-human) queue --- #
+    def add_pending(self, chat_id, title: str, reason: str, when: str) -> None:
+        if self.driver_for_chat(chat_id) or self.drivers_for_chat(chat_id):
+            return  # already assigned — nothing pending
+        self._pending[str(chat_id)] = {"title": title or "", "reason": reason, "seen": when}
+
+    def clear_pending(self, chat_id) -> None:
+        self._pending.pop(str(chat_id), None)
+
+    def pending(self) -> dict[str, dict]:
+        return dict(self._pending)
+
+    def unassigned_groups(self) -> list[dict]:
+        """Known groups with no driver assigned (includes the pending reason)."""
+        out: list[dict] = []
+        for cid, rec in list(self._groups.items()):
+            if self.drivers_for_chat(cid):
+                continue
+            p = self._pending.get(cid) or {}
+            out.append({"chat_id": cid, "title": rec.get("title") or "",
+                        "reason": p.get("reason", "not matched yet")})
+        return out
 
     # --- offset (Telegram update ack) --- #
     @property
@@ -152,15 +248,18 @@ class GroupRegistry:
         return changed
 
     # --- driver Telegram tag (for @mentions) --- #
+    # Readers iterate over a snapshot copy: the scheduler thread reads the
+    # registry while the command-loop thread may be mutating it, and a plain
+    # dict iteration would raise "changed size during iteration".
     def driver_for_chat(self, chat_id) -> str | None:
-        for did, rec in self._drivers.items():
+        for did, rec in list(self._drivers.items()):
             if str(rec.get("chat_id")) == str(chat_id):
                 return did
         return None
 
     def drivers_for_chat(self, chat_id) -> list[str]:
         """All driver ids registered to a chat (co-driver / team groups)."""
-        return [did for did, rec in self._drivers.items()
+        return [did for did, rec in list(self._drivers.items())
                 if str(rec.get("chat_id")) == str(chat_id)]
 
     def unregister(self, driver_id: str) -> bool:
@@ -206,7 +305,7 @@ class GroupRegistry:
         """Tag coverage summary: how many drivers have a tag, and which don't."""
         by_u = by_i = 0
         missing: list[str] = []
-        for rec in self._drivers.values():
+        for rec in list(self._drivers.values()):
             if rec.get("tg_username"):
                 by_u += 1
             elif rec.get("tg_user_id"):
@@ -232,177 +331,17 @@ def _name_matches(driver_name: str, sender_name: str) -> bool:
     return bool(toks) and all(t in sn for t in toks)
 
 
-def _chat_from_update(u: dict) -> dict | None:
-    for key in ("message", "my_chat_member", "edited_message", "channel_post"):
-        chat = (u.get(key) or {}).get("chat")
-        if chat:
-            return chat
-    return None
-
-
-def _coverage_report(registry: GroupRegistry) -> str:
-    c = registry.coverage()
-    lines = [
-        "📊 Tag coverage",
-        f"Registered driver groups: {c['total']}",
-        f"Tagged: {c['tagged']}  (@username {c['by_username']}, by id {c['by_id']})",
-        f"Missing tag: {len(c['missing'])}",
-    ]
-    if c["missing"]:
-        shown = c["missing"][:30]
-        lines.append("Missing: " + ", ".join(shown) + (" …" if len(c["missing"]) > 30 else ""))
-    return "\n".join(lines)
-
-
-def _admin_help() -> str:
-    return (
-        "Admin controls:\n"
-        "/coverage — show driver-group coverage\n"
-        "/drivers — list registered driver groups\n"
-        "/add <driver name> — assign the driver to this group\n"
-        "/remove <driver name> — remove the driver from this group"
-    )
-
-
-def _driver_report(registry: GroupRegistry) -> str:
-    records = registry.all()
-    if not records:
-        return "No driver groups are registered yet."
-    lines = ["Registered driver groups:"]
-    for record in sorted(records.values(), key=lambda item: item.get("driver_name", "")):
-        lines.append(
-            f"- {record.get('driver_name', '?')} -> {record.get('title') or record.get('chat_id')}"
-        )
-    return "\n".join(lines)
-
-
 def discover_groups(sender, registry: GroupRegistry, candidates: list[Candidate],
                     reply: bool = True, admin_user_ids=None) -> list[tuple]:
-    """Process pending Telegram updates and register matched driver groups.
+    """One-shot sweep over pending Telegram updates (commands + group discovery).
 
-    Returns a list of (driver_name, chat_id, matched_on, title) newly registered
-    or re-pointed. Advances and persists the update offset.
+    Kept for the ``--discover`` CLI and any caller that wants a single pass. The
+    live service uses ``commands.run_command_loop`` instead. Delegates to
+    ``commands.process_updates`` (deferred import avoids a cycle).
     """
-    updates = sender.get_updates(registry.offset)
-    if not updates:
-        return []
+    from .commands import process_updates
 
-    newly: list[tuple] = []
-    max_id = registry.offset
-    for u in updates:
-        max_id = max(max_id, int(u.get("update_id", 0)))
-        chat = _chat_from_update(u)
-        if not chat:
-            continue
-
-        # (0) Handle commands (in any chat).
-        msg = u.get("message") or u.get("edited_message") or {}
-        text = (msg.get("text") or "").strip()
-        cmd = text.split()[0].split("@")[0].lower() if text else ""
-        sender_id = (msg.get("from") or {}).get("id")
-        admin_only = bool(admin_user_ids)
-        is_admin = not admin_only or sender_id in admin_user_ids
-        if cmd == "/admin":
-            if is_admin:
-                sender.send_message(str(chat["id"]), _admin_help())
-            continue
-        if cmd == "/drivers":
-            if is_admin:
-                sender.send_message(str(chat["id"]), _driver_report(registry))
-            continue
-        if cmd in ("/status", "/coverage"):
-            sender.send_message(str(chat["id"]), _coverage_report(registry))
-            continue
-        if cmd in ("/remove", "/unregister"):
-            if not is_admin:
-                sender.send_message(str(chat["id"]), "This command is restricted to bot administrators.")
-                continue
-            arg = text.split(None, 1)[1].strip() if len(text.split(None, 1)) > 1 else ""
-            if not arg:
-                sender.send_message(str(chat["id"]),
-                                    "Usage: /remove <driver name> — stops that driver's "
-                                    "alerts in this group.")
-            else:
-                removed = []
-                for did in list(registry.drivers_for_chat(chat["id"])):
-                    dn = registry.driver_name(did) or ""
-                    if _name_matches(dn, arg) or _name_matches(arg, dn):
-                        registry.unregister(did)
-                        registry.block(did)  # keep it removed even if the title still matches
-                        removed.append(dn)
-                if removed:
-                    log.info("removed via command: %s from chat %s", removed, chat["id"])
-                    sender.send_message(
-                        str(chat["id"]),
-                        f"✅ Removed {', '.join(removed)} from this group. "
-                        f"No more alerts for them here. (Use /add <name> to bring them back.)")
-                else:
-                    sender.send_message(str(chat["id"]),
-                                        f"No registered driver matching “{arg}” in this group.")
-            continue
-        if cmd in ("/add", "/register"):
-            if not is_admin:
-                sender.send_message(str(chat["id"]), "This command is restricted to bot administrators.")
-                continue
-            arg = text.split(None, 1)[1].strip() if len(text.split(None, 1)) > 1 else ""
-            if not arg:
-                sender.send_message(str(chat["id"]),
-                                    "Usage: /add <driver name> — registers that driver's "
-                                    "alerts to this group.")
-            else:
-                added = []
-                for c in candidates:
-                    if _name_matches(c.name, arg) or _name_matches(arg, c.name):
-                        registry.unblock(c.driver_id)
-                        registry.register(c.driver_id, chat["id"],
-                                          chat.get("title") or "", "manual", c.name)
-                        added.append(c.name)
-                if added:
-                    log.info("added via command: %s to chat %s", added, chat["id"])
-                    sender.send_message(
-                        str(chat["id"]),
-                        f"✅ Registered {', '.join(added)} to this group. "
-                        f"HOS alerts will be posted here.")
-                else:
-                    sender.send_message(str(chat["id"]),
-                                        f"No driver matching “{arg}” found on the roster.")
-            continue
-
-        if chat.get("type") not in ("group", "supergroup"):
-            continue
-
-        # (a) Register the group to ALL drivers it names (co-driver teams too).
-        title = chat.get("title") or ""
-        new_names: list[str] = []
-        for driver_id, how in match_drivers(title, candidates):
-            if registry.is_blocked(driver_id):  # explicitly /remove'd — stay out
-                continue
-            name = next((c.name for c in candidates if c.driver_id == driver_id), "")
-            if registry.register(driver_id, chat["id"], title, how, name):
-                newly.append((name, chat["id"], how, title))
-                new_names.append(name)
-        if new_names and reply:
-            who = "these drivers" if len(new_names) > 1 else "this driver"
-            sender.send_message(
-                str(chat["id"]),
-                f"✅ Registered this group to {', '.join(new_names)}. "
-                f"HOS alerts for {who} will be posted here.",
-            )
-
-        # (b) Auto-capture a driver's Telegram @tag: match a message sender's
-        # name to whichever co-driver registered to this group.
-        msg = u.get("message") or u.get("edited_message") or {}
-        frm = msg.get("from") or {}
-        if frm and not frm.get("is_bot"):
-            sender_name = f"{frm.get('first_name', '')} {frm.get('last_name', '')}".strip()
-            for did in registry.drivers_for_chat(chat["id"]):
-                if _name_matches(registry.driver_name(did) or "", sender_name):
-                    if registry.set_tag(did, frm.get("username"), frm.get("id")):
-                        handle = ("@" + frm["username"]) if frm.get("username") else f"id:{frm.get('id')}"
-                        log.info("captured tag for %s -> %s",
-                                 registry.driver_name(did), handle)
-                    break
-
-    registry.set_offset(max_id + 1)
-    registry.save()
-    return newly
+    return process_updates(
+        sender, registry, candidates,
+        admin_user_ids=admin_user_ids, reply=reply,
+    )

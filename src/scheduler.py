@@ -37,11 +37,15 @@ class CycleStats:
 
 
 def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
-              activity_log=None) -> CycleStats:
+              activity_log=None, discover: bool = True) -> CycleStats:
     """Execute one polling cycle. Returns stats; persists state at the end.
 
     Order: fetch all snapshots → (registry) discover/match driver groups from
     Telegram updates → evaluate rules → send → commit de-dup on success.
+
+    ``discover=False`` skips the Telegram getUpdates step — set it when a
+    dedicated command loop (commands.run_command_loop) owns Telegram polling, so
+    the two don't both call getUpdates (Telegram returns HTTP 409 to one).
     """
     now = now or datetime.now(timezone.utc)
     stats = CycleStats()
@@ -67,11 +71,13 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
         fetched.append((company, result))
 
     # 2) Group auto-discovery: match new Telegram groups to drivers.
-    if registry is not None:
+    #    Skipped when a dedicated command loop owns Telegram polling.
+    if registry is not None and discover:
         from .registry import Candidate, discover_groups
         candidates = [
-            Candidate(s.driver_id, s.name, s.username, s.connection.vehicle_number)
-            for _, result in fetched for s in result.snapshots
+            Candidate(s.driver_id, s.name, s.username, s.connection.vehicle_number,
+                      company.name)
+            for company, result in fetched for s in result.snapshots
         ]
         newly = discover_groups(
             sender, registry, candidates, admin_user_ids=config.admin_user_ids
@@ -117,7 +123,8 @@ def run_forever(config, sender, state, *, registry=None,
                 on_cycle: Callable[[CycleStats], None] | None = None,
                 cycle_lock=None,
                 stop_event: threading.Event | None = None,
-                max_cycles: int | None = None) -> None:
+                max_cycles: int | None = None,
+                discover: bool = True) -> None:
     """Loop run_cycle every poll_interval_seconds until stopped.
 
     stop_event : set it to request a graceful stop (also wired to SIGINT/SIGTERM).
@@ -161,7 +168,7 @@ def run_forever(config, sender, state, *, registry=None,
                     log.exception("config reload failed — keeping previous cycle's config")
             with (cycle_lock or contextlib.nullcontext()):
                 stats = run_cycle(config, sender, state, registry=registry,
-                                   activity_log=activity_log)
+                                   activity_log=activity_log, discover=discover)
             if on_cycle is not None:
                 on_cycle(stats)
             cov = registry.coverage() if registry is not None else {"tagged": 0, "total": 0}
