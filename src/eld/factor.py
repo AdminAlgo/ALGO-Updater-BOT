@@ -48,6 +48,26 @@ VEHICLE_STATUS_PATH = "/v2/latest-vehicle-status"
 _PLACEHOLDER_IDS = {"", "replace_me"}
 
 
+def _as_int(value) -> int:
+    """Coerce an API numeric field to int, tolerating strings/floats/nulls.
+
+    HOS seconds have arrived as ints, but a bare ``int()`` on anything else the
+    API might send ("3600", 3600.0, null) raises a TypeError/ValueError that is
+    NOT an ELDError — it would escape the per-company error isolation in
+    scheduler.run_cycle and abort the whole cycle. Unparseable => 0.
+    """
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _parse_timestamp(value: str | None) -> datetime | None:
     """Parse an ISO-8601 timestamp like '2026-06-03T03:13:03Z' to aware UTC."""
     if not value:
@@ -65,9 +85,16 @@ def _parse_timestamp(value: str | None) -> datetime | None:
 class FactorELD(ELDProvider):
     name = "factor"
 
-    #: how many times to retry a 429 before giving up, and the base backoff.
+    #: how many times to retry a transient failure before giving up, and the
+    #: base backoff (doubled per attempt).
     _MAX_RETRIES = 3
     _BACKOFF_BASE = 3.0
+    #: HTTP statuses worth retrying: 429 rate limit plus the transient gateway
+    #: errors DriveHOS returns during a deploy. 500 is NOT here — a genuine
+    #: server error repeats, and retrying it just delays the cycle.
+    _RETRY_STATUSES = frozenset({429, 502, 503, 504})
+    #: hard cap on pagination, so a bogus total_pages can't loop forever.
+    _MAX_PAGES = 50
 
     def __init__(
         self,
@@ -93,18 +120,28 @@ class FactorELD(ELDProvider):
             "Accept": "application/json",
         }
 
+    def _retry_wait(self, headers, attempt: int) -> float:
+        """Seconds to wait before the next attempt — Retry-After if the server
+        sent a usable one, else exponential backoff. Clamped to 1..60s."""
+        try:
+            wait = float((headers or {}).get("Retry-After", ""))
+        except (TypeError, ValueError):
+            wait = self._BACKOFF_BASE * (2 ** attempt)
+        return min(max(wait, 1.0), 60.0)
+
     def _get(self, path: str, params: dict | None = None) -> dict:
         """GET one page and return the parsed ResponseV2 envelope.
 
-        Retries HTTP 429 (rate limit) with backoff, honouring a Retry-After
-        header when present — one provider key is shared by every company plus
-        the dashboard, so short bursts over the limit are expected. Other errors
-        raise immediately.
+        Retries transient failures (429 rate limit — one provider key is shared
+        by every company plus the dashboard, so short bursts over the limit are
+        expected — plus 502/503/504 and network errors) with backoff, honouring
+        a Retry-After header when present. Everything else raises immediately.
         """
         query = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
         url = f"{self._base_url}{path}" + (f"?{query}" if query else "")
 
         body: str | None = None
+        last_error = "no attempt made"
         for attempt in range(self._MAX_RETRIES + 1):
             req = urllib.request.Request(url, headers=self._headers(), method="GET")
             try:
@@ -115,23 +152,31 @@ class FactorELD(ELDProvider):
                 detail = exc.read().decode("utf-8", "replace")[:300]
                 if exc.code == 401:
                     raise Unauthorized(f"{self.name}: HTTP 401 for {path} — {detail}") from exc
-                if exc.code == 429 and attempt < self._MAX_RETRIES:
-                    try:
-                        wait = float(exc.headers.get("Retry-After", ""))
-                    except (TypeError, ValueError):
-                        wait = self._BACKOFF_BASE * (2 ** attempt)
-                    wait = min(max(wait, 1.0), 60.0)
-                    log.warning("%s: HTTP 429 for %s — retry %d/%d in %.0fs",
-                                self.name, path, attempt + 1, self._MAX_RETRIES, wait)
+                last_error = f"HTTP {exc.code} — {detail}"
+                if exc.code in self._RETRY_STATUSES and attempt < self._MAX_RETRIES:
+                    wait = self._retry_wait(exc.headers, attempt)
+                    log.warning("%s: HTTP %d for %s — retry %d/%d in %.0fs",
+                                self.name, exc.code, path, attempt + 1,
+                                self._MAX_RETRIES, wait)
                     time.sleep(wait)
                     continue
                 raise ELDError(f"{self.name}: HTTP {exc.code} for {path} — {detail}") from exc
             except urllib.error.URLError as exc:
+                # Timeouts / connection resets: transient by nature. Retrying
+                # here keeps one blip from costing the whole company's cycle.
+                last_error = f"network error — {exc.reason}"
+                if attempt < self._MAX_RETRIES:
+                    wait = self._retry_wait(None, attempt)
+                    log.warning("%s: network error for %s (%s) — retry %d/%d in %.0fs",
+                                self.name, path, exc.reason, attempt + 1,
+                                self._MAX_RETRIES, wait)
+                    time.sleep(wait)
+                    continue
                 raise ELDError(f"{self.name}: network error for {path} — {exc.reason}") from exc
 
-        if body is None:  # exhausted retries on 429
-            raise ELDError(f"{self.name}: HTTP 429 for {path} — rate limit, gave up "
-                           f"after {self._MAX_RETRIES} retries")
+        if body is None:  # defensive: every branch above either breaks or raises
+            raise ELDError(f"{self.name}: {path} failed after {self._MAX_RETRIES} "
+                           f"retries — {last_error}")
 
         try:
             envelope = json.loads(body)
@@ -147,7 +192,12 @@ class FactorELD(ELDProvider):
         return envelope
 
     def _get_all(self, path: str, params: dict | None = None) -> list[dict]:
-        """GET every page of a list endpoint and return the concatenated data."""
+        """GET every page of a list endpoint and return the concatenated data.
+
+        Only mapping rows are kept: every caller does ``row.get(...)``, and a
+        stray scalar in ``data`` would raise an AttributeError that isn't an
+        ELDError — i.e. it would escape per-company error isolation.
+        """
         params = dict(params or {})
         params.setdefault("limit", self._page_size)
         page = 1
@@ -156,14 +206,18 @@ class FactorELD(ELDProvider):
             params["page"] = page
             env = self._get(path, params)
             data = env.get("data") or []
-            if isinstance(data, list):
-                rows.extend(data)
-            else:  # single-object endpoint used as a list; stop
-                if data:
-                    rows.append(data)
+            if isinstance(data, dict):  # single-object endpoint used as a list
+                rows.append(data)
                 break
+            if not isinstance(data, list):
+                break
+            rows.extend(r for r in data if isinstance(r, dict))
             total_pages = env.get("total_pages") or 1
             if page >= total_pages or not data:
+                break
+            if page >= self._MAX_PAGES:
+                log.warning("%s: %s stopped at the %d-page cap (total_pages=%s)",
+                            self.name, path, self._MAX_PAGES, total_pages)
                 break
             page += 1
         return rows
@@ -227,10 +281,10 @@ class FactorELD(ELDProvider):
         st = statuses.get(driver_id, {})
         veh = vehicles.get(driver_id)
         hos = HosTimers(
-            drive_seconds=int(st.get("drive", 0) or 0),
-            shift_seconds=int(st.get("shift", 0) or 0),
-            break_seconds=int(st.get("break", 0) or 0),
-            cycle_seconds=int(st.get("cycle", 0) or 0),
+            drive_seconds=_as_int(st.get("drive")),
+            shift_seconds=_as_int(st.get("shift")),
+            break_seconds=_as_int(st.get("break")),
+            cycle_seconds=_as_int(st.get("cycle")),
         )
         connection = ConnectionState(
             has_vehicle=veh is not None,
@@ -260,9 +314,15 @@ class FactorELD(ELDProvider):
             for row in roster:
                 if not row.get("active", True):
                     continue
+                driver_id = row.get("driver_id")
+                if not driver_id:
+                    # Nothing to join HOS/vehicle data on, and no stable de-dup
+                    # key for alert state — skip rather than crash the cycle.
+                    log.warning("%s: roster row without driver_id skipped", self.name)
+                    continue
                 result.snapshots.append(
                     self._snapshot_from(
-                        row["driver_id"],
+                        driver_id,
                         self._roster_full_name(row) or row.get("username", ""),
                         row.get("username"),
                         statuses,
@@ -273,7 +333,9 @@ class FactorELD(ELDProvider):
 
         for driver in drivers:
             row = self._resolve(driver, by_id, by_name, by_username)
-            if row is None:
+            # A name/username match can land on a roster row that carries no
+            # driver_id; treat that as unresolved, same as no match at all.
+            if row is None or not row.get("driver_id"):
                 result.unresolved_names.append(driver.name)
                 continue
             result.snapshots.append(

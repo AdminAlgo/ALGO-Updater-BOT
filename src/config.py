@@ -15,6 +15,7 @@ Public API:
 from __future__ import annotations
 
 import os
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,48 @@ def mask_secret(value: Any) -> str:
     return f"****{s[-4:]}"
 
 
+# Credential values that are obviously still the template text from
+# .env.example rather than an issued key. Such a value can only ever produce
+# HTTP 401 at runtime, so it's reported at startup instead of being retried
+# every polling cycle forever.
+_PLACEHOLDER_EXACT = {"replace_me", "changeme", "change_me", "todo", "none", "null", "xxx"}
+_PLACEHOLDER_SUFFIXES = ("-here", "_here", "-token-here", "goes-here")
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    """True if a credential is template text, not a real issued value."""
+    v = (value or "").strip().lower()
+    if not v:
+        return False
+    if v in _PLACEHOLDER_EXACT:
+        return True
+    if v.startswith("your-") or v.startswith("your_"):
+        return True
+    return v.endswith(_PLACEHOLDER_SUFFIXES)
+
+
+def _url_problem(value: str, label: str) -> str | None:
+    """Validate an API base URL. Returns a problem string, or None if fine.
+
+    A scheme-less value ("api.drivehos.app") makes urllib raise a bare
+    ValueError from inside the provider client, far from the cause; and http://
+    would put both API keys on the wire in cleartext, since they travel as
+    request headers.
+    """
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        return (
+            f"{label} must be an absolute URL including the scheme, "
+            f"e.g. https://api.drivehos.app"
+        )
+    if parsed.scheme != "https":
+        return (
+            f"{label} must use https:// — the Provider and Company API keys are "
+            f"sent as request headers and would otherwise travel unencrypted"
+        )
+    return None
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -221,6 +264,17 @@ def _load_secrets(problems: list[str]) -> Secrets | None:
 
     if len(values) != len(REQUIRED_ENV_VARS):
         return None
+
+    for name in ("FACTOR_API_BASE_URL", "LEADER_API_BASE_URL"):
+        problem = _url_problem(values[name], name)
+        if problem:
+            problems.append(problem)
+
+    if _looks_like_placeholder(values["TELEGRAM_BOT_TOKEN"]):
+        problems.append(
+            "TELEGRAM_BOT_TOKEN still contains placeholder text from .env.example "
+            "— paste the real token from BotFather"
+        )
 
     def _opt(name: str) -> str | None:
         raw = os.environ.get(name)
@@ -316,6 +370,12 @@ def _parse_companies(raw_companies: Any, problems: list[str]) -> list[Company]:
                 problems.append(
                     f"{where}: environment variable {company_key_env} "
                     f"(company_key_env) is missing or empty"
+                )
+            elif enabled and _looks_like_placeholder(company_key or ""):
+                problems.append(
+                    f"{where}: environment variable {company_key_env} still contains "
+                    f"placeholder text, not a real X-API-Company-Key — every request "
+                    f"for this company would fail with HTTP 401"
                 )
         elif enabled:
             problems.append(f"{where}.company_key_env is required for an enabled company")
@@ -453,10 +513,20 @@ def load_config(
     if secrets is not None:
         providers_in_use = {c.provider for c in companies if c.enabled}
         for provider, env_name in PROVIDER_KEY_ENV_VARS.items():
-            if provider in providers_in_use and not secrets.provider_key_for(provider):
+            if provider not in providers_in_use:
+                continue
+            key = secrets.provider_key_for(provider)
+            if not key:
                 problems.append(
                     f"missing or empty environment variable: {env_name} "
                     f"(required because an enabled company uses provider {provider!r})"
+                )
+            elif _looks_like_placeholder(key):
+                problems.append(
+                    f"{env_name} still contains placeholder text, not a real "
+                    f"X-API-Provider-Key — every {provider!r} request would fail with "
+                    f"HTTP 401. This key is issued by Factor/DriveHOS for the "
+                    f"integration itself, separate from any company's own key"
                 )
 
     # Optional driver-log URL template.

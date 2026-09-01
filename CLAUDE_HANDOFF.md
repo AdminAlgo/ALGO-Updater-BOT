@@ -4,6 +4,56 @@
 
 This Python service polls ELD data and sends Hours-of-Service alerts to Telegram driver groups. It must be reliable, conservative, and safe with credentials.
 
+## 2026-09-01: API-layer review — hardening, no auth or endpoint changes
+
+Reviewed the Partner API integration against the live spec
+(`https://api.drivehos.app/partner/swagger/doc.json`, re-fetched today). The
+auth model and the three endpoints in use are **correct and unchanged**: both
+`X-API-Provider-Key` and `X-API-Company-Key` are required on every `/v2/*`
+call, and the `limit`/`page` query params plus the
+`data`/`total_pages`/`status_code` envelope fields the client reads all match
+the spec exactly. Nothing about the data-fetch path was replaced.
+
+What was fixed (all defensive; `tests/test_factor_client.py`,
+`tests/test_roster_cache.py`, plus new cases in `tests/test_config.py`):
+
+1. **Cycle-killing crashes on odd payloads.** `scheduler.run_cycle` isolates
+   only `ELDError` per company, so any other exception aborts the whole cycle
+   for *every* company, including the send phase. Three payload shapes could
+   do that, and both companies run `monitor_all_drivers: true`, which is the
+   path that had no guard at all:
+   - a roster row without `driver_id` → `KeyError` (now skipped + logged; a
+     name-matched row without an id counts as unresolved);
+   - a non-mapping row inside `data` → `AttributeError` (now filtered in
+     `_get_all`);
+   - a non-int HOS value like `"3600"` → `ValueError` (now `_as_int`, → 0).
+2. **`build_provider` with a missing key** raised a `TypeError` from inside
+   urllib; it now raises `ELDError`, which callers already isolate per company.
+3. **Retry policy widened** from 429-only to 429/502/503/504 plus network
+   errors (same backoff, `Retry-After` honoured). 500 deliberately still does
+   not retry. Pagination gained a 50-page cap so a bogus `total_pages` can't
+   loop forever.
+4. **`RosterCache` held its lock across the network fetch** — three HTTP calls
+   per company, each up to the timeout plus backoff. The command loop calls
+   `get()` every iteration and the scheduler calls `prime()` every cycle, so a
+   slow DriveHOS response stalled the scheduler behind it. The fetch now runs
+   with the lock released, with an in-flight flag so concurrent `get()`s serve
+   the cache instead of stacking fetches. It also merges per company now: a
+   company whose fetch fails keeps its previous roster (as the docstring
+   always claimed) instead of vanishing, while a company that got disabled is
+   dropped.
+5. **Config validation** now rejects credentials that are still `.env.example`
+   placeholder text (`REPLACE_ME`, `your-…`, `…-here`) for enabled companies
+   and in-use providers, and requires the base URLs to be absolute `https://`
+   — both keys travel as request headers. This turns the current live symptom
+   (`FACTOR_API_KEY` placeholder → silent 401 every cycle forever) into one
+   clear startup message naming the variable. Disabled companies are exempt,
+   same isolation principle as before.
+
+**The open blocker is unchanged and is not a code problem:** real
+`FACTOR_API_KEY` / `LEADER_API_KEY` Provider keys are still needed. Both
+Company keys are real. Nothing else stands between this bot and live data.
+
 ## 2026-08-26: reverted to real Partner API keys — bearer-token auth removed entirely
 
 The whole 2026-08-21/22 bearer-token detour (`BearerSession`/`SessionManager`,
