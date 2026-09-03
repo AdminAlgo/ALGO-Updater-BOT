@@ -3,6 +3,12 @@
 {% block content %}
 <h1>Status</h1>
 
+{% if not admin_configured %}
+<p class="flash-error">⚠ ADMIN_TELEGRAM_USER_IDS is not set — every Telegram
+user is currently treated as an admin for bot commands. Set it in the
+environment and redeploy to restrict admin commands.</p>
+{% endif %}
+
 <section>
   <h2>Last poll cycle</h2>
   {% if stats %}

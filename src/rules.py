@@ -26,6 +26,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
+from . import messages
 from .eld.base import DriverSnapshot, normalize_name
 
 log = logging.getLogger("eld_alert_bot")
@@ -83,6 +84,7 @@ TEAM_GROUP = "team_group"
 
 # Alert kinds.
 KIND_LOW_HOURS = "low_hours"
+KIND_CYCLE = "cycle"
 KIND_SHIFT_VIOLATION = "shift_violation"
 KIND_DISCONNECT = "disconnect"
 KIND_ON_DUTY = "on_duty"
@@ -111,113 +113,22 @@ class Alert:
     # name and attaches a text_mention entity so the driver is still pinged.
     mention_user_id: int | None = None
     mention_name: str | None = None
+    # Shift-violation only: True if this is a resend, not the episode's first
+    # message — tells commit() whether to count it against the resend cap.
+    is_resend: bool = False
 
     def commit(self, state, now) -> None:
         """Record in state that this alert was successfully sent (de-dup)."""
         if self.kind == KIND_LOW_HOURS:
             state.mark_low_hours_fired(self.driver_id, self.audience, self.threshold)
+        elif self.kind == KIND_CYCLE:
+            state.mark_cycle_fired(self.driver_id, self.audience, self.threshold)
         elif self.kind == KIND_SHIFT_VIOLATION:
-            state.set_shift_violation_active(self.driver_id, True)
+            state.mark_shift_violation_sent(self.driver_id, now, is_resend=self.is_resend)
         elif self.kind == KIND_DISCONNECT:
             state.mark_disconnect_alert(self.driver_id, now)
         elif self.kind == KIND_ON_DUTY:
             state.set_on_duty_alerted(self.driver_id, True)
-
-
-# --------------------------------------------------------------------------- #
-# Message templates
-# --------------------------------------------------------------------------- #
-def render_log_url(template: str | None, snap: DriverSnapshot) -> str | None:
-    """Fill a driver-log URL template with this driver's identifiers."""
-    if not template:
-        return None
-    try:
-        return template.format(
-            driver_id=snap.driver_id,
-            username=snap.username or "",
-            name=snap.name,
-        )
-    except (KeyError, IndexError, ValueError):
-        return template  # unknown placeholder — use template as-is
-
-
-def _finalize(text: str, tag: str | None = None, log_url: str | None = None) -> str:
-    """Prepend the driver @mention (to notify them) and append the log link."""
-    if tag:
-        text = f"{tag}\n\n{text}"
-    if log_url:
-        text = f"{text}\n\n📋 Driver log: {log_url}"
-    return text
-
-
-def _low_hours_text(snap: DriverSnapshot, tag: str | None = None, log_url: str | None = None,
-                    closing: str | None = None) -> str:
-    # The triggering timer is the most urgent (lowest) of Drive / Break / Shift.
-    timers = {
-        "Drive": snap.hos.drive_seconds,
-        "Break": snap.hos.break_seconds,
-        "Shift": snap.hos.shift_seconds,
-    }
-    label, secs = min(timers.items(), key=lambda kv: kv[1])
-    hours, minutes = secs // 3600, (secs % 3600) // 60
-    def _u(n, unit):
-        return f"{n} {unit}" + ("" if n == 1 else "s")
-    if hours and minutes:
-        amount = f"{_u(hours, 'hour')} and {_u(minutes, 'minute')}"
-    elif hours:
-        amount = _u(hours, "hour")
-    else:
-        amount = _u(minutes, "minute")
-    closing = closing or "Please let us know if you will need more."
-    return _finalize(
-        "Assalomu alaykum.\n"
-        f"Dear {snap.name}\n\n"
-        f"You have only {amount} on your {label}. "
-        f"{closing}\n\n"
-        "Thank you.",
-        tag, log_url,
-    )
-
-
-def _shift_violation_text(snap: DriverSnapshot, shift_limit_hours: int,
-                          tag: str | None = None, log_url: str | None = None) -> str:
-    return _finalize(
-        "Assalomu alaykum.\n"
-        f"Dear {snap.name}\n\n"
-        f"Your {shift_limit_hours}-hour shift limit has been reached. "
-        "For your safety and to stay compliant, please stop driving and begin "
-        "your required rest.\n\n"
-        "If you have any questions, please let us know.\n\n"
-        "Thank you.",
-        tag, log_url,
-    )
-
-
-def _on_duty_text(snap: DriverSnapshot, hours, tag: str | None = None, log_url: str | None = None) -> str:
-    h = int(hours) if float(hours).is_integer() else hours
-    return _finalize(
-        "Assalomu alaykum.\n"
-        f"Dear {snap.name}\n\n"
-        f"We noticed you have been On Duty for more than {h} hours. "
-        "Is everything okay?\n"
-        "If you need any help, please let us know.\n\n"
-        "Thank you.",
-        tag, log_url,
-    )
-
-
-def _disconnect_text(snap: DriverSnapshot, tag: str | None = None, log_url: str | None = None) -> str:
-    return _finalize(
-        "Assalomu alaykum.\n"
-        f"Dear {snap.name}\n\n"
-        "Your ELD device appears to be DISCONNECTED while you are driving. "
-        "Please reconnect it as soon as possible so your Hours of Service are "
-        "recorded correctly.\n\n"
-        "If you are having trouble connecting, let us know and we will guide you "
-        "through it.\n\n"
-        "Thank you.",
-        tag, log_url,
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -246,7 +157,7 @@ def evaluate_driver(
     else:
         driver_chat = company.driver_group_chat_id
     team_chat = getattr(company, "team_group_chat_id", None) or config.team_group_chat_id
-    log_url = render_log_url(getattr(config, "driver_log_url_template", None), snap)
+    log_url = messages.render_log_url(getattr(config, "driver_log_url_template", None), snap)
     tag, mention_uid = _resolve_mention(snap, config, registry)  # @handle or user-id
     # A driver is "active" (and thus alertable for low-hours) only while in a
     # connection_required status (Driving / On Duty / Yard Move) — never while
@@ -268,7 +179,8 @@ def evaluate_driver(
     )
     if no_active_shift:
         state.reset_low_hours(did)
-        state.set_shift_violation_active(did, False)
+        state.reset_cycle(did)
+        state.clear_shift_violation(did)
         state.clear_disconnect(did)
         return []
 
@@ -313,33 +225,84 @@ def evaluate_driver(
                 company=company.name,
                 driver_name=snap.name,
                 driver_id=did,
-                text=_low_hours_text(snap, tag, log_url,
-                                     closing=getattr(company, "low_hours_closing", None)),
+                text=messages.low_hours_text(snap, tag, log_url),
                 dedupe_key=f"{did}:low:{audience}:{threshold}",
                 threshold=threshold,
             )
         )
 
+    # --- Rule 5 (A1): 70-hour Cycle running low ---------------------------- #
+    cycle_thr = list(getattr(config, "cycle_alert_thresholds_hours", []) or [])
+    if cycle_thr:
+        cycle_hours = snap.hos.cycle_seconds / 3600
+        # Recovery: comfortably above every threshold again, or no longer on
+        # duty — clear fired flags so the next cycle can alert again.
+        if not active or cycle_hours > max(cycle_thr):
+            state.reset_cycle(did)
+
+        if active:
+            crossed = sorted(t for t in cycle_thr if cycle_hours <= t)
+            if crossed:
+                threshold = crossed[0]  # most urgent (smallest) crossed
+                cycle_targets = [(DRIVER_GROUP, driver_chat)]
+                if getattr(config, "cycle_also_notify_dispatch", False):
+                    cycle_targets.append((TEAM_GROUP, team_chat))
+                for audience, chat_id in cycle_targets:
+                    if not chat_id:
+                        continue
+                    if state.cycle_already_fired(did, audience, threshold):
+                        continue
+                    # NOTE: not marked fired here — committed after a successful send.
+                    alerts.append(
+                        Alert(
+                            kind=KIND_CYCLE,
+                            audience=audience,
+                            chat_id=chat_id,
+                            company=company.name,
+                            driver_name=snap.name,
+                            driver_id=did,
+                            text=messages.cycle_text(snap, tag, log_url),
+                            dedupe_key=f"{did}:cycle:{audience}:{threshold}",
+                            threshold=threshold,
+                        )
+                    )
+
     # --- Rule 2: shift limit violation ------------------------------------ #
     # Only a real violation if the driver is actually on duty/driving — a
     # Sleeper/Off-Duty driver whose shift timer reads 0 is resting, not violating.
     in_violation = active and snap.hos.shift_seconds <= 0
-    if in_violation and not state.shift_violation_active(did):
-        # Marked active on successful send (Alert.commit), not here.
-        alerts.append(
-            Alert(
-                kind=KIND_SHIFT_VIOLATION,
-                audience=TEAM_GROUP,          # escalate violations to the central chat
-                chat_id=team_chat,
-                company=company.name,
-                driver_name=snap.name,
-                driver_id=did,
-                text=_shift_violation_text(snap, config.shift_limit_hours, tag, log_url),
-                dedupe_key=f"{did}:shift_violation",
-            )
+    if in_violation:
+        resend_minutes = getattr(config, "shift_violation_resend_minutes", 30)
+        max_resends = getattr(config, "shift_violation_max_resends", 5)
+        first_send = not state.shift_violation_active(did)
+        resends_sent = state.shift_violation_resend_count(did)
+        due = first_send or (
+            resends_sent < max_resends
+            and state.shift_violation_due(did, resend_minutes, now)
         )
-    elif not in_violation:
-        state.set_shift_violation_active(did, False)
+        if due:
+            violation_targets = [(DRIVER_GROUP, driver_chat)]  # FIX-1: driver group only
+            if getattr(config, "shift_violation_also_notify_dispatch", False):
+                violation_targets.append((TEAM_GROUP, team_chat))
+            for audience, chat_id in violation_targets:
+                if not chat_id:
+                    continue
+                # Marked sent on successful send (Alert.commit), not here.
+                alerts.append(
+                    Alert(
+                        kind=KIND_SHIFT_VIOLATION,
+                        audience=audience,
+                        chat_id=chat_id,
+                        company=company.name,
+                        driver_name=snap.name,
+                        driver_id=did,
+                        text=messages.shift_violation_text(snap, config.shift_limit_hours, tag, log_url),
+                        dedupe_key=f"{did}:shift_violation:{'first' if first_send else resends_sent + 1}",
+                        is_resend=not first_send,
+                    )
+                )
+    else:
+        state.clear_shift_violation(did)
 
     # --- Rule 3: ELD disconnected while active ---------------------------- #
     # Disabled via config (disconnect_alerts_enabled: false) — the group only
@@ -352,19 +315,31 @@ def evaluate_driver(
     )
     if active and disconnected and driver_chat:
         if state.disconnect_due(did, config.disconnect_realert_minutes, now):
-            # Timestamp recorded on successful send (Alert.commit), not here.
-            alerts.append(
-                Alert(
-                    kind=KIND_DISCONNECT,
-                    audience=DRIVER_GROUP,
-                    chat_id=driver_chat,
-                    company=company.name,
-                    driver_name=snap.name,
-                    driver_id=did,
-                    text=_disconnect_text(snap, tag, log_url),
-                    dedupe_key=f"{did}:disconnect",
+            # FIX-5: status_phrase always comes from the SAME snap the status
+            # card is rendered from (_attach_log_image below), so the message
+            # and the card can never disagree. An unrecognized duty status
+            # means skip-and-log rather than guess at wording.
+            status_phrase = messages.disconnect_status_phrase(snap)
+            if status_phrase is None:
+                log.error(
+                    "disconnect alert for %s (%s) skipped — no message phrasing "
+                    "for duty status %r; card/text mismatch guard tripped",
+                    snap.name, did, snap.duty_status_label,
                 )
-            )
+            else:
+                # Timestamp recorded on successful send (Alert.commit), not here.
+                alerts.append(
+                    Alert(
+                        kind=KIND_DISCONNECT,
+                        audience=DRIVER_GROUP,
+                        chat_id=driver_chat,
+                        company=company.name,
+                        driver_name=snap.name,
+                        driver_id=did,
+                        text=messages.disconnect_text(snap, status_phrase, tag, log_url),
+                        dedupe_key=f"{did}:disconnect",
+                    )
+                )
     else:
         # Reconnected or no longer active — reset so a future disconnect alerts.
         state.clear_disconnect(did)
@@ -393,7 +368,7 @@ def evaluate_driver(
                         company=company.name,
                         driver_name=snap.name,
                         driver_id=did,
-                        text=_on_duty_text(snap, on_duty_hours, tag, log_url),
+                        text=messages.on_duty_text(snap, on_duty_hours, tag, log_url),
                         dedupe_key=f"{did}:on_duty",
                     )
                 )

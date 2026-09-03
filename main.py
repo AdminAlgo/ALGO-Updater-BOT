@@ -146,6 +146,13 @@ def print_summary(config: Config) -> None:
     for company in config.companies:
         print(f"  {company.name}: {mask_chat_id(company.driver_group_chat_id)}")
 
+    print("\nAdmin access:")
+    if config.admin_user_ids:
+        print(f"  ADMIN_TELEGRAM_USER_IDS: {len(config.admin_user_ids)} configured")
+    else:
+        print("  ADMIN_TELEGRAM_USER_IDS: NOT SET — every Telegram user is "
+              "currently treated as an admin")
+
     print(line)
 
 

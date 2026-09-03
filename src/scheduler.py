@@ -22,6 +22,7 @@ from typing import Callable
 
 from .eld import ELDError, build_provider
 from .rules import evaluate_company
+from .sender_queue import SendQueue
 
 log = logging.getLogger("eld_alert_bot")
 
@@ -34,6 +35,7 @@ class CycleStats:
     provider_errors: int = 0
     registered: int = 0
     unresolved: list[str] = field(default_factory=list)
+    queue_drain_seconds: float = 0.0
 
 
 def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
@@ -90,7 +92,14 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
         for name, chat_id, how, title in newly:
             log.info("registered group for %s (by %s): %s [%s]", name, how, title, chat_id)
 
-    # 3) Evaluate + send per company.
+    # 3) Evaluate every company, queue every alert, then drain the queue once.
+    #    Detection never blocks on Telegram — the queue enforces rate limits
+    #    and retries 429s instead of dropping messages (FIX-7).
+    queue = SendQueue(
+        sender,
+        global_per_second=getattr(config, "send_rate_per_second", 25),
+        per_chat_per_minute=getattr(config, "send_rate_per_chat_per_minute", 20),
+    )
     for company, result in fetched:
         alerts = evaluate_company(
             result.snapshots, company=company, config=config, state=state,
@@ -98,22 +107,29 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
         )
         stats.alerts += len(alerts)
         for alert in alerts:
-            res = sender.send_alert(alert)
-            if res.ok:
-                alert.commit(state, now)  # de-dup only after a confirmed send
-                stats.sent += 1
-                log.info("sent [%s] %s -> chat %s", alert.kind, alert.driver_name, alert.chat_id)
-            else:
-                stats.failed += 1
-                log.error("send FAILED [%s] %s -> chat %s: %s (will retry next cycle)",
-                          alert.kind, alert.driver_name, alert.chat_id, res.error)
-            if activity_log is not None:
-                from .activity_log import ActivityEntry
-                activity_log.record(ActivityEntry(
-                    ts=now.isoformat(), kind=alert.kind, company=company.name,
-                    driver_name=alert.driver_name, chat_id=str(alert.chat_id),
-                    audience=alert.audience, ok=res.ok, error=res.error,
-                ))
+            queue.push(alert)
+
+    def _on_result(alert, res):
+        if res.ok:
+            alert.commit(state, now)  # de-dup only after a confirmed send
+            stats.sent += 1
+            log.info("sent [%s] %s -> chat %s", alert.kind, alert.driver_name, alert.chat_id)
+        else:
+            stats.failed += 1
+            log.error("send FAILED [%s] %s -> chat %s: %s (will retry next cycle)",
+                      alert.kind, alert.driver_name, alert.chat_id, res.error)
+        if activity_log is not None:
+            from .activity_log import ActivityEntry
+            activity_log.record(ActivityEntry(
+                ts=now.isoformat(), kind=alert.kind, company=alert.company,
+                driver_name=alert.driver_name, chat_id=str(alert.chat_id),
+                audience=alert.audience, ok=res.ok, error=res.error,
+            ))
+
+    drain = queue.drain(on_result=_on_result)
+    stats.queue_drain_seconds = drain.drain_seconds
+    log.info("send queue drained — detected=%d sent=%d failed=%d in %.1fs",
+             drain.detected, drain.sent, drain.failed, drain.drain_seconds)
 
     state.save()
     if activity_log is not None:
@@ -180,9 +196,10 @@ def run_forever(config, sender, state, *, registry=None,
             cov = registry.coverage() if registry is not None else {"tagged": 0, "total": 0}
             log.info(
                 "cycle %d done — alerts=%d sent=%d failed=%d registered=%d "
-                "tags=%d/%d provider_errors=%d",
+                "tags=%d/%d provider_errors=%d drain=%.1fs",
                 cycles, stats.alerts, stats.sent, stats.failed, stats.registered,
                 cov["tagged"], cov["total"], stats.provider_errors,
+                stats.queue_drain_seconds,
             )
         except Exception:  # never let one bad cycle kill the loop
             log.exception("unexpected error in cycle %d", cycles)

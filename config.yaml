@@ -8,9 +8,16 @@ low_hours_thresholds_minutes:
   team_group:
   - 60
   - 30
-disconnect_realert_minutes: 30
-disconnect_stale_minutes: 15
+disconnect_realert_minutes: 60
+disconnect_stale_minutes: 30
 shift_limit_hours: 14
+shift_violation_resend_minutes: 30
+shift_violation_max_resends: 5
+shift_violation_also_notify_dispatch: false
+send_rate_per_second: 25
+send_rate_per_chat_per_minute: 20
+cycle_alert_thresholds_hours: [10, 5]
+cycle_also_notify_dispatch: false
 attach_log_image: true
 disconnect_alerts_enabled: true
 on_duty_alert_hours: 2

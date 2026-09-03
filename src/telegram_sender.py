@@ -34,11 +34,27 @@ class SendResult:
     chat_id: str
     kind: str = ""
     error: str | None = None
+    retry_after: int | None = None  # seconds Telegram told us to wait (429 only)
 
 
 def _looks_like_placeholder(token: str) -> bool:
     t = (token or "").strip().lower()
     return not t or any(h in t for h in _PLACEHOLDER_HINTS)
+
+
+def _parse_retry_after(status_code: int, raw_body: str) -> int | None:
+    """Telegram's 429 body carries retry_after under `parameters` — parsed
+    from the FULL body, not the 300-char truncated copy kept for logging."""
+    if status_code != 429:
+        return None
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return None
+    try:
+        return int((body.get("parameters") or {}).get("retry_after"))
+    except (TypeError, ValueError):
+        return None
 
 
 class TelegramSender:
@@ -84,8 +100,9 @@ class TelegramSender:
         try:
             body = self._post("sendMessage", payload)
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:300]
-            return SendResult(False, chat_id, kind, f"HTTP {exc.code}: {detail}")
+            raw = exc.read().decode("utf-8", "replace")
+            return SendResult(False, chat_id, kind, f"HTTP {exc.code}: {raw[:300]}",
+                              retry_after=_parse_retry_after(exc.code, raw))
         except urllib.error.URLError as exc:
             return SendResult(False, chat_id, kind, f"network error: {exc.reason}")
         except json.JSONDecodeError:
@@ -137,7 +154,9 @@ class TelegramSender:
             resp_body = urllib.request.urlopen(req, timeout=self._timeout).read().decode("utf-8")
             result = json.loads(resp_body)
         except urllib.error.HTTPError as exc:
-            return SendResult(False, chat_id, kind, f"HTTP {exc.code}: {exc.read().decode('utf-8','replace')[:300]}")
+            raw = exc.read().decode("utf-8", "replace")
+            return SendResult(False, chat_id, kind, f"HTTP {exc.code}: {raw[:300]}",
+                              retry_after=_parse_retry_after(exc.code, raw))
         except (urllib.error.URLError, json.JSONDecodeError) as exc:
             return SendResult(False, chat_id, kind, f"photo send error: {exc}")
         if not result.get("ok"):

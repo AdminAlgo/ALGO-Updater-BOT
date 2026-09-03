@@ -143,42 +143,51 @@ def _faq_text() -> str:
         "the driver goes Off Duty.\n"
         "• Only while Driving / On Duty / Yard Move.\n\n"
 
-        "2) 14-HOUR SHIFT LIMIT — violation\n"
-        "• Fires the moment Shift time-remaining hits 0 while on duty.\n"
-        "• → the dispatch/team group (escalation). Once per violation.\n\n"
+        "2) 70-HOUR CYCLE — running low\n"
+        "• Fires when Cycle time-remaining drops to 10 h, then 5 h left.\n"
+        "• → the driver's own group. Each level sends once per cycle; resets "
+        "on a 34-hour restart or when the driver goes Off Duty.\n\n"
 
-        "3) ELD DISCONNECTED — device offline while working\n"
-        "• Fires when the truck is OFFLINE or has not reported for 15 min, "
+        "3) 14-HOUR SHIFT LIMIT — violation\n"
+        "• Fires the moment Shift time-remaining hits 0 while on duty.\n"
+        "• → the driver's own group. Repeats every 30 min while still in "
+        "violation, up to 5 times, then stops.\n\n"
+
+        "4) ELD DISCONNECTED — device offline while working\n"
+        "• Fires when the truck is OFFLINE or has not reported for 30 min, "
         "while the driver is Driving / On Duty / Yard Move.\n"
-        "• → the driver's group. Repeats every 30 min until reconnected.\n"
+        "• → the driver's group. Repeats every 60 min until reconnected.\n"
         "• Never off duty, in sleeper, or with no truck paired.\n\n"
 
-        "4) LONG ON-DUTY — welfare check\n"
+        "5) LONG ON-DUTY — welfare check\n"
         "• Fires when a driver is On Duty (not driving) for 2 h straight.\n"
         "• → the driver's group. Once per On-Duty stretch.\n\n"
 
         "WHAT DOES NOT ALERT\n"
         "• Off-duty / sleeper drivers (resting).\n"
         "• A driver who just came On Duty with a fresh shift (no false 14 h).\n"
-        "• A driver with no group assigned — only the 14 h violation (which "
-        "goes to the team group) would still fire for them.\n"
+        "• A driver with no group assigned — none of their alerts have "
+        "anywhere to go, including the 14 h violation.\n"
         "• A disabled company.\n\n"
 
         "TIMING & REPEATS\n"
-        "• Alerts from one check go out back-to-back (~0.05 s apart).\n"
+        "• Alerts from one check are queued and sent rate-limited (never all "
+        "at once).\n"
         "• Nothing repeats unless the condition clears and happens again — "
-        "except Disconnect, which re-pings every 30 min.\n\n"
+        "except Disconnect (every 60 min) and a 14h violation (every 30 min, "
+        "up to 5 times).\n\n"
 
         "MESSAGE STYLE\n"
-        "• “Assalomu alaykum. / Dear <name> / <the issue> / <closing line> / "
-        "Thank you.” The driver is @-mentioned when their handle is known, and a "
-        "PNG card (Break/Drive/Shift/Cycle gauges + name + truck + duty status) "
-        "is attached.\n\n"
+        "• “Hello. / Dear <name> / <the issue> / Thank you.” The driver is "
+        "@-mentioned when their handle is known, and a PNG card "
+        "(Break/Drive/Shift/Cycle gauges + name + truck + duty status) is "
+        "attached.\n\n"
 
         "CURRENT SETTINGS\n"
         "check every 120 s · shift limit 14 h · low-hours driver 120/60/30 min · "
-        "low-hours team 60/30 min · disconnect stale 15 min · disconnect re-alert "
-        "30 min · long on-duty 2 h · log image ON · disconnect alerts ON"
+        "low-hours team 60/30 min · cycle 10/5 h · disconnect stale 30 min · "
+        "disconnect re-alert 60 min · long on-duty 2 h · log image ON · "
+        "disconnect alerts ON"
     )
 
 
@@ -519,6 +528,14 @@ def run_command_loop(sender, registry: GroupRegistry, roster_cache, *,
     roster_cache.RosterCache (memory-served, refreshed on its own TTL).
     """
     stop = stop_event or threading.Event()
+    if not admin_user_ids:
+        log.warning(
+            "=" * 70 + "\n"
+            "  ADMIN_TELEGRAM_USER_IDS is empty — every Telegram user is "
+            "currently treated as an admin for /assign, /groups, /unassign, "
+            "/whois, /unassigned, /add, /remove, /roster, /drivers.\n"
+            + "=" * 70
+        )
     if sender.set_my_commands(_BOT_COMMANDS):
         log.info("registered %d bot commands with Telegram", len(_BOT_COMMANDS))
     log.info("command loop started — long-poll %ds", poll_timeout)

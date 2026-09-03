@@ -28,7 +28,10 @@ from typing import Any
 def _empty_record() -> dict[str, Any]:
     return {
         "low_hours_fired": {"driver_group": [], "team_group": []},
+        "cycle_fired": {"driver_group": [], "team_group": []},
         "shift_violation_active": False,
+        "shift_violation_last_sent_iso": None,
+        "shift_violation_resend_count": 0,
         "last_disconnect_iso": None,
         "on_duty_since": None,        # when the current On-Duty episode began
         "on_duty_alerted": False,     # welfare check already sent this episode
@@ -79,13 +82,57 @@ class AlertState:
         self._rec(driver_id)["low_hours_fired"] = {"driver_group": [], "team_group": []}
 
     # ------------------------------------------------------------------ #
-    # Shift violation episode
+    # 70-hour Cycle thresholds (A1) — same fire-once-per-threshold shape as
+    # low-hours, tracked separately since it's a distinct timer/rule.
+    # ------------------------------------------------------------------ #
+    def cycle_already_fired(self, driver_id: str, audience: str, threshold: int) -> bool:
+        rec = self._rec(driver_id).setdefault("cycle_fired", {"driver_group": [], "team_group": []})
+        return threshold in rec.get(audience, [])
+
+    def mark_cycle_fired(self, driver_id: str, audience: str, threshold: int) -> None:
+        rec = self._rec(driver_id).setdefault("cycle_fired", {"driver_group": [], "team_group": []})
+        fired = rec.setdefault(audience, [])
+        if threshold not in fired:
+            fired.append(threshold)
+
+    def reset_cycle(self, driver_id: str) -> None:
+        self._rec(driver_id)["cycle_fired"] = {"driver_group": [], "team_group": []}
+
+    # ------------------------------------------------------------------ #
+    # Shift violation episode — fires immediately, then resends on a timer
+    # while the driver is still in violation (see shift_violation_due).
     # ------------------------------------------------------------------ #
     def shift_violation_active(self, driver_id: str) -> bool:
         return bool(self._rec(driver_id)["shift_violation_active"])
 
-    def set_shift_violation_active(self, driver_id: str, active: bool) -> None:
-        self._rec(driver_id)["shift_violation_active"] = active
+    def shift_violation_resend_count(self, driver_id: str) -> int:
+        return int(self._rec(driver_id).get("shift_violation_resend_count", 0))
+
+    def shift_violation_due(self, driver_id: str, resend_minutes: int, now: datetime) -> bool:
+        """True if enough time has passed since the last violation alert to resend."""
+        last = self._rec(driver_id).get("shift_violation_last_sent_iso")
+        if not last:
+            return True
+        try:
+            last_dt = datetime.fromisoformat(last)
+        except ValueError:
+            return True
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        return (now - last_dt).total_seconds() >= resend_minutes * 60
+
+    def mark_shift_violation_sent(self, driver_id: str, now: datetime, is_resend: bool) -> None:
+        rec = self._rec(driver_id)
+        rec["shift_violation_active"] = True
+        rec["shift_violation_last_sent_iso"] = now.isoformat()
+        if is_resend:
+            rec["shift_violation_resend_count"] = rec.get("shift_violation_resend_count", 0) + 1
+
+    def clear_shift_violation(self, driver_id: str) -> None:
+        rec = self._rec(driver_id)
+        rec["shift_violation_active"] = False
+        rec["shift_violation_last_sent_iso"] = None
+        rec["shift_violation_resend_count"] = 0
 
     # ------------------------------------------------------------------ #
     # Disconnect re-alert throttle

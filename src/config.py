@@ -153,6 +153,20 @@ class Config:
     # Welfare check: alert when a driver stays On Duty (continuously) at least
     # this many hours. 0 disables it.
     on_duty_alert_hours: float = 2
+    # 14-hour shift violation: how it repeats while still in violation (FIX-2),
+    # and whether it also escalates to the team/dispatch group in addition to
+    # the driver's own group (FIX-1 default: driver group only).
+    shift_violation_resend_minutes: int = 30
+    shift_violation_max_resends: int = 5
+    shift_violation_also_notify_dispatch: bool = False
+    # FIX-7: outbound Telegram rate limits (global + per-chat) the send queue
+    # respects — safely under Telegram's real caps (~30/s, ~20/min per chat).
+    send_rate_per_second: float = 25
+    send_rate_per_chat_per_minute: int = 20
+    # A1: 70-hour Cycle running low — thresholds in HOURS remaining (not
+    # minutes, unlike low_hours_thresholds_minutes).
+    cycle_alert_thresholds_hours: list = field(default_factory=lambda: [10, 5])
+    cycle_also_notify_dispatch: bool = False
     # Manual driver -> Telegram @handle overrides (keyed by driver name), used
     # when auto-capture from the group can't identify the driver.
     manual_driver_tags: dict = field(default_factory=dict)
@@ -446,6 +460,15 @@ def load_config(
             _int_list_problems(team_thr, "low_hours_thresholds_minutes.team_group")
         )
 
+    # A1: 70-hour Cycle thresholds (hours remaining). Missing => default
+    # [10, 5]; present => validated list of positive ints (empty = disabled).
+    raw_cycle_thr = data.get("cycle_alert_thresholds_hours")
+    if raw_cycle_thr is None:
+        cycle_thr: list[int] = [10, 5]
+    else:
+        problems.extend(_int_list_problems(raw_cycle_thr, "cycle_alert_thresholds_hours"))
+        cycle_thr = raw_cycle_thr if isinstance(raw_cycle_thr, list) else [10, 5]
+
     companies = _parse_companies(data.get("companies"), problems)
 
     # Provider (platform-wide) key — only required if an ENABLED company
@@ -487,6 +510,13 @@ def load_config(
         attach_log_image=bool(data.get("attach_log_image", False)),
         disconnect_alerts_enabled=bool(data.get("disconnect_alerts_enabled", True)),
         on_duty_alert_hours=float(data.get("on_duty_alert_hours", 2) or 0),
+        shift_violation_resend_minutes=int(data.get("shift_violation_resend_minutes", 30) or 30),
+        shift_violation_max_resends=int(data.get("shift_violation_max_resends", 5) or 5),
+        shift_violation_also_notify_dispatch=bool(data.get("shift_violation_also_notify_dispatch", False)),
+        send_rate_per_second=float(data.get("send_rate_per_second", 25) or 25),
+        send_rate_per_chat_per_minute=int(data.get("send_rate_per_chat_per_minute", 20) or 20),
+        cycle_alert_thresholds_hours=list(cycle_thr),
+        cycle_also_notify_dispatch=bool(data.get("cycle_also_notify_dispatch", False)),
         manual_driver_tags=(data.get("manual_driver_tags") or {}) if isinstance(
             data.get("manual_driver_tags") or {}, dict) else {},
         admin_user_ids=admin_user_ids,
