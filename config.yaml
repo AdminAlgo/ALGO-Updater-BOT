@@ -5,9 +5,7 @@ low_hours_thresholds_minutes:
   - 120
   - 60
   - 30
-  team_group:
-  - 60
-  - 30
+  team_group: []
 disconnect_realert_minutes: 60
 disconnect_stale_minutes: 30
 shift_limit_hours: 14
@@ -108,3 +106,9 @@ companies:
   monitor_all_drivers: true
   driver_group_chat_id: '-5228573261'
   company_key_env: ZOHA_COMPANY_KEY
+- name: MILEMAX LLC
+  provider: leader
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: MILEMAX_COMPANY_KEY
