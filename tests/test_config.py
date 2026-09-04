@@ -133,13 +133,16 @@ class LoadConfigTests(unittest.TestCase):
                 load_config(config_path, env_path)
             self.assertTrue(any("company_key_env" in p for p in ctx.exception.problems))
 
-    def test_enabled_company_with_unset_env_var_is_reported(self):
+    def test_enabled_company_with_unset_env_var_is_auto_disabled(self):
+        # A key env var that's missing from the HOST (e.g. never added to the
+        # deployment's variables) must not crash-loop the whole service: the
+        # company is disabled with a loud log line and everything else runs.
         env_body = MINIMAL_ENV.replace("ACME_KEY=test-company-key\n", "")
         with tempfile.TemporaryDirectory() as d, _clean_env():
             config_path, env_path = self._write(d, env_body=env_body)
-            with self.assertRaises(ConfigError) as ctx:
-                load_config(config_path, env_path)
-            self.assertTrue(any("ACME_KEY" in p for p in ctx.exception.problems))
+            config = load_config(config_path, env_path)
+            self.assertFalse(config.companies[0].enabled)
+            self.assertIsNone(config.companies[0].company_key)
 
     def test_missing_provider_key_blocks_when_provider_in_use(self):
         env_body = MINIMAL_ENV.replace("FACTOR_API_KEY=test-provider-key\n", "")

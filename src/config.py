@@ -14,6 +14,7 @@ Public API:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,8 @@ except ImportError as exc:  # pragma: no cover - dependency guard
     raise ImportError(
         "python-dotenv is required. Install dependencies with: pip install -r requirements.txt"
     ) from exc
+
+log = logging.getLogger("eld_alert_bot.config")
 
 
 # Required environment variables (secrets), unconditionally. All must be
@@ -327,10 +330,16 @@ def _parse_companies(raw_companies: Any, problems: list[str]) -> list[Company]:
             raw_key = os.environ.get(company_key_env)
             company_key = raw_key.strip() if raw_key and raw_key.strip() else None
             if enabled and company_key is None:
-                problems.append(
-                    f"{where}: environment variable {company_key_env} "
-                    f"(company_key_env) is missing or empty"
+                # Deployment-environment mismatch (e.g. the variable was never
+                # added on the host). One company's missing key must not take
+                # the whole service down — disable just this company and keep
+                # every other company alerting.
+                log.error(
+                    "%s (%s): environment variable %s (company_key_env) is "
+                    "missing or empty — company DISABLED until it is set",
+                    where, name, company_key_env,
                 )
+                enabled = False
         elif enabled:
             problems.append(f"{where}.company_key_env is required for an enabled company")
         else:
