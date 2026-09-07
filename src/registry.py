@@ -37,6 +37,28 @@ class Candidate:
     company: str | None = None
 
 
+def _narrow_by_company(t: str, candidates: list[Candidate]) -> list[Candidate]:
+    """If the (normalized) title names exactly one company present among the
+    candidates, narrow matching to that company's drivers only.
+
+    Truck numbers are assigned per-company, so the same number (e.g. "708")
+    can legitimately belong to a different driver at a different company. A
+    group title that says which company it belongs to (as ours do — e.g.
+    "#708 | Bakhodir Saidov | ZOHA LLC") must not let that number cross-match
+    a same-numbered truck at an unrelated company. Titles that don't mention
+    a company (or can't be pinned to exactly one) fall back to the full pool,
+    same as before.
+    """
+    companies = {c.company for c in candidates if c.company}
+    if len(companies) < 2:
+        return candidates  # nothing to disambiguate
+    hit = {comp for comp in companies if normalize_name(comp) in t}
+    if len(hit) == 1:
+        only = hit.pop()
+        return [c for c in candidates if c.company == only]
+    return candidates
+
+
 def match_title(title: str, candidates: list[Candidate]) -> tuple[str | None, str | None]:
     """Match a group title to a driver. Returns (driver_id, matched_on) or (None, None).
 
@@ -45,6 +67,7 @@ def match_title(title: str, candidates: list[Candidate]) -> tuple[str | None, st
     t = normalize_name(title)
     if not t:
         return None, None
+    candidates = _narrow_by_company(t, candidates)
 
     # 1) full name appears in the title
     for c in candidates:
@@ -75,6 +98,7 @@ def match_drivers(title: str, candidates: list[Candidate]) -> list[tuple[str, st
     t = normalize_name(title)
     if not t:
         return []
+    candidates = _narrow_by_company(t, candidates)
     by_name = [(c.driver_id, "name") for c in candidates if c.name and normalize_name(c.name) in t]
     if by_name:
         return by_name
@@ -98,6 +122,7 @@ def match_unique(title: str, candidates: list[Candidate]) -> tuple[str | None, s
     t = normalize_name(title)
     if not t:
         return None, None, "empty title"
+    candidates = _narrow_by_company(t, candidates)
 
     by_name = [c for c in candidates if c.name and normalize_name(c.name) in t]
     if len(by_name) == 1:

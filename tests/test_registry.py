@@ -2,11 +2,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.registry import Candidate, GroupRegistry, match_drivers, match_title
+from src.registry import Candidate, GroupRegistry, match_drivers, match_title, match_unique
 
 CANDIDATES = [
     Candidate("d1", "Ali Niezov", username="alin", truck="1833"),
     Candidate("d2", "Temirlan Baizakov", username="temir", truck="42"),
+]
+
+# Reproduces the #708 MILEMAX / ZOHA mismatch: the MILEMAX group's title
+# names an office contact ("Nusratullo Nasrullaev") who isn't a roster
+# driver at all, plus the "708" serial — no MILEMAX driver actually matches
+# it. Only Bakhodir Saidov (a different company, ZOHA) has truck "708". The
+# old code fell through to the truck tier and matched him globally, routing
+# his alerts to the unrelated MILEMAX group.
+CROSS_COMPANY_CANDIDATES = [
+    Candidate("other", "Someone Else", truck="999", company="MILEMAX LLC"),
+    Candidate("bakhodir", "Bakhodir Saidov", truck="708", company="ZOHA LLC"),
 ]
 
 
@@ -34,6 +45,33 @@ class MatchTitleTests(unittest.TestCase):
 
     def test_empty_title(self):
         self.assertEqual(match_title("", CANDIDATES), (None, None))
+
+
+class CrossCompanyTruckCollisionTests(unittest.TestCase):
+    """A truck number can be reused across two companies (e.g. a leased truck
+    dispatched under two authorities). A group title that names the company
+    must not let that shared number auto-match the wrong company's driver."""
+
+    def test_truck_number_does_not_cross_match_another_company(self):
+        # Only Bakhodir (ZOHA) has truck "708" — old code matched him globally.
+        # The title names MILEMAX, so narrowing to MILEMAX's own roster (which
+        # has no truck-708 driver) must leave this unmatched, not mis-assign
+        # Bakhodir's alerts to an unrelated company's group.
+        did, how, reason = match_unique(
+            "#708 Nusratullo Nasrullaev | MILEMAX LLC", CROSS_COMPANY_CANDIDATES
+        )
+        self.assertIsNone(did)
+        self.assertIsNone(how)
+
+    def test_correct_company_group_still_matches_by_name(self):
+        did, how, reason = match_unique(
+            "#708 | Bakhodir Saidov | ZOHA LLC", CROSS_COMPANY_CANDIDATES
+        )
+        self.assertEqual((did, how), ("bakhodir", "name"))
+
+    def test_truck_match_still_works_within_the_same_company(self):
+        did, how, reason = match_unique("Truck 708 | ZOHA LLC", CROSS_COMPANY_CANDIDATES)
+        self.assertEqual((did, how), ("bakhodir", "truck"))
 
 
 class MatchDriversTests(unittest.TestCase):
