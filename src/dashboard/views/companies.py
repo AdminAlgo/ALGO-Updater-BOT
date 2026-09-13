@@ -1,23 +1,14 @@
 from __future__ import annotations
 
-import re
+import os
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 
+from ... import key_store
 from .. import config_writer
 from ..auth import login_required
 
 bp = Blueprint("companies", __name__, url_prefix="/companies")
-
-
-def _valid_key_env(name: str) -> bool:
-    """A company_key_env must be a usable shell/env identifier.
-
-    Worth enforcing here: a name with a space in it (`MILEMAX LLC`) can be set
-    on Railway without complaint but can never be read back by the loader, so
-    the company silently disables itself every cycle.
-    """
-    return bool(name) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is not None
 
 
 def _counters(runtime, config):
@@ -92,70 +83,108 @@ def new():
     runtime = current_app.config["RUNTIME"]
     name = request.form.get("name", "").strip()
     provider = request.form.get("provider", "").strip()
-    chat_id = request.form.get("driver_group_chat_id", "").strip()
     usdot = request.form.get("usdot", "").strip()
-    mc_number = request.form.get("mc_number", "").strip()
-    key_env = request.form.get("company_key_env", "").strip()
-    if not name or provider not in ("factor", "leader") or not chat_id:
-        flash("Name, provider (factor/leader), and chat id are required.", "error")
+    api_key = request.form.get("api_key", "").strip()
+    if not name or provider not in ("factor", "leader"):
+        flash("Name and provider (factor/leader) are required.", "error")
         return redirect(url_for("companies.index"))
-    if not _valid_key_env(key_env):
-        flash("API key env var name is required, and may contain only letters, "
-              "digits and underscores (no spaces).", "error")
+    if not api_key:
+        flash("API key is required.", "error")
         return redirect(url_for("companies.index"))
+
+    config = runtime.current_config()
+    if any(c.name.strip().lower() == name.lower() for c in config.companies):
+        flash(f"A company named {name} already exists.", "error")
+        return redirect(url_for("companies.index"))
+
+    try:
+        key_env = key_store.env_name_for(name)
+    except key_store.KeyStoreError as exc:
+        flash(f"Could not derive a key name from {name!r}: {exc}", "error")
+        return redirect(url_for("companies.index"))
+
     company = {
         "name": name,
         "provider": provider,
-        "driver_group_chat_id": chat_id,
-        "enabled": False,  # always added paused — enable only after --eld-check passes
+        # Per-driver groups come from the registry; this company-wide fallback is
+        # only used when a driver has no group of their own, so it inherits the
+        # central chat rather than asking for a chat id the operator doesn't have
+        # yet. config.yaml requires it to be a non-empty string.
+        "driver_group_chat_id": config.team_group_chat_id,
+        "enabled": False,  # always added paused — enable once the roster looks right
         "monitor_all_drivers": True,
         "usdot": usdot,
-        "mc_number": mc_number,
+        "mc_number": "",
         "company_key_env": key_env,
     }
     with runtime.lock:
+        # Store the key first: if this fails the company is never written, which
+        # is better than a company that exists but can never authenticate.
+        try:
+            key_store.put(key_env, api_key)
+        except Exception as exc:
+            flash(f"Could not store the API key: {exc}", "error")
+            return redirect(url_for("companies.index"))
         try:
             config_writer.add_company(company, runtime.config_path, runtime.env_path)
         except Exception as exc:
+            key_store.delete(key_env)  # don't leave an orphaned secret behind
             flash(f"Could not add company: {exc}", "error")
         else:
-            flash(f"Added {name}, disabled by default — enable once its API key is verified "
-                  f"(python main.py --eld-check).", "ok")
+            flash(f"Added {name}, paused. Its API key is stored — open the ⋮ menu "
+                  f"and Enable it once the driver count looks right.", "ok")
     return redirect(url_for("companies.index"))
 
 
 @bp.post("/<name>/key-env")
 @login_required
 def key_env(name):
-    """Point a company at the env var holding its API key (§4.3 / §7 option c).
+    """Replace a company's API key (§4.3).
 
-    The secret itself still lives only in Railway/.env — this stores the *name*
-    so the loader can find it. Without this a company added through the panel
-    has no company_key_env at all and can never be enabled.
+    The key is written to the encrypted store, not into config.yaml. A company
+    whose key currently comes from a host environment variable keeps reading
+    that variable — the host wins in load_config — so this reports that case
+    instead of saving a value that would be silently ignored.
     """
     runtime = current_app.config["RUNTIME"]
-    value = request.form.get("company_key_env", "").strip()
-    if value and not _valid_key_env(value):
-        flash("Env var name may contain only letters, digits and underscores "
-              "(no spaces).", "error")
+    api_key = request.form.get("api_key", "").strip()
+    if not api_key:
+        flash("API key is required.", "error")
         return redirect(url_for("companies.index"))
+
+    config = runtime.current_config()
+    company = next((c for c in config.companies if c.name == name), None)
+    if company is None:
+        flash(f"Company not found: {name}", "error")
+        return redirect(url_for("companies.index"))
+
+    key_env_name = company.company_key_env
+    if not key_env_name:
+        try:
+            key_env_name = key_store.env_name_for(name)
+        except key_store.KeyStoreError as exc:
+            flash(f"Could not derive a key name for {name}: {exc}", "error")
+            return redirect(url_for("companies.index"))
+
     with runtime.lock:
         try:
-            # Pass "" rather than None to clear: update_company filters None out,
-            # and load_config treats an empty string as "not configured" (it only
-            # rejects that for a company that is still enabled).
-            config_writer.update_company(
-                name, {"company_key_env": value},
-                runtime.config_path, runtime.env_path,
-            )
+            key_store.put(key_env_name, api_key)
+            if company.company_key_env != key_env_name:
+                config_writer.update_company(
+                    name, {"company_key_env": key_env_name},
+                    runtime.config_path, runtime.env_path,
+                )
         except Exception as exc:
             flash(f"Could not update {name}: {exc}", "error")
-        else:
-            if value:
-                flash(f"{name} now reads its API key from {value}. Set that "
-                      f"variable on Railway, then redeploy and enable it.", "ok")
-            else:
-                flash(f"Cleared the API key variable name for {name}.", "ok")
+            return redirect(url_for("companies.index"))
+
+    if os.environ.get(key_env_name, "").strip():
+        flash(f"Saved, but {name} still reads {key_env_name} from the host "
+              f"environment, which takes priority. Remove that variable on "
+              f"Railway for the new key to take effect.", "error")
+    else:
+        flash(f"Updated the API key for {name}. It applies on the next poll "
+              f"cycle — no redeploy needed.", "ok")
     return redirect(url_for("companies.index"))
 
 

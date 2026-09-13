@@ -23,10 +23,13 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
+from src import config as config_module
 from src.activity_log import ActivityLog
 from src.commands import run_command_loop
 from src.config import Config, ConfigError, load_config, mask_chat_id, mask_secret
@@ -46,6 +49,30 @@ REGISTRY_FILE = os.path.join(DATA_DIR, "driver_groups.json")
 ACTIVITY_LOG_FILE = os.path.join(DATA_DIR, "activity_log.json")
 SEND_LOG_FILE = os.path.join(DATA_DIR, "send_log.jsonl")
 MESSAGE_TEMPLATES_FILE = os.path.join(DATA_DIR, "message_templates.json")
+
+# config.yaml normally comes from the repo, but the admin panel writes companies
+# back to it, so on Railway it has to sit on the volume too — CONFIG_PATH points
+# there and _seed_config_file() copies the repo's copy across on first boot.
+CONFIG_FILE = config_module.default_config_path()
+REPO_CONFIG_FILE = "config.yaml"
+
+
+def _seed_config_file() -> None:
+    """Copy the repo's config.yaml onto the volume the first time only.
+
+    After that the volume copy is authoritative — it holds companies added
+    through the panel, which the repo copy knows nothing about, so it must never
+    be overwritten on a later boot.
+    """
+    target = Path(CONFIG_FILE)
+    if target == Path(REPO_CONFIG_FILE) or target.exists():
+        return
+    source = Path(REPO_CONFIG_FILE)
+    if not source.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    logging.info("seeded %s from the repo's config.yaml (first boot)", target)
 
 
 def _setup_logging() -> None:
@@ -445,7 +472,7 @@ def run_dashboard(config: Config) -> int:
     from src.templates_store import TemplateStore
     template_store = TemplateStore(MESSAGE_TEMPLATES_FILE)
     runtime = RuntimeContext(
-        config_path="config.yaml", env_path=".env",
+        config_path=CONFIG_FILE, env_path=".env",
         registry=registry, state=state, activity_log=activity_log,
         roster_cache=roster, sender=sender, template_store=template_store,
         send_log_path=SEND_LOG_FILE,
@@ -488,6 +515,9 @@ def run_dashboard(config: Config) -> int:
 
 
 def main(argv: list[str]) -> int:
+    # Must happen before the first load_config(): on a fresh volume the target
+    # doesn't exist yet, and load_config() would fail on the missing file.
+    _seed_config_file()
     try:
         config = load_config()
     except ConfigError as exc:

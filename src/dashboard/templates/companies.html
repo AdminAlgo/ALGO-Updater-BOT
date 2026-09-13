@@ -74,25 +74,22 @@
 <section>
   <h2>Add a company</h2>
   <form method="post" action="{{ url_for('companies.new') }}">
-    <label>Name <input type="text" name="name" required></label>
-    <label>USDOT (optional) <input type="text" name="usdot"></label>
-    <label>MC# (optional) <input type="text" name="mc_number"></label>
+    <label>Name <input type="text" name="name" required placeholder="e.g. SOLEH EXPRESS INC"></label>
+    <label>USDOT (optional) <input type="text" name="usdot" placeholder="e.g. 4150645"></label>
     <label>Provider
       <select name="provider">
         <option value="factor">factor</option>
         <option value="leader">leader</option>
       </select>
     </label>
-    <label>Driver group chat id <input type="text" name="driver_group_chat_id" required></label>
-    <label>API key env var name
-      <input type="text" name="company_key_env" required
-             placeholder="e.g. SOLEH_EXPRESS_COMPANY_KEY"
-             pattern="[A-Za-z_][A-Za-z0-9_]*"
-             title="Letters, digits and underscores only — no spaces.">
+    <label>API key
+      <input type="password" name="api_key" required autocomplete="off"
+             placeholder="the company's DriveHOS API key">
     </label>
     <p class="hint" style="margin-top:-4px;">
-      The panel stores this <em>name</em> only. Set the actual key on Railway
-      under the same name, then enable the company.
+      Stored encrypted on this server — it is never written into config.yaml and
+      never shown again. The company is added paused; enable it once you've
+      checked the driver count looks right.
     </p>
     <button type="submit" class="btn">Add (disabled by default)</button>
   </form>
@@ -119,21 +116,17 @@
     <h2>Change API key</h2>
     <form method="post" data-action-template="{{ url_for('companies.key_env', name='__ID__') }}">
       <p class="hint" style="margin-top:0;">
-        This panel never stores the secret itself. It stores the <em>name</em> of
-        the environment variable that holds it — set the value on Railway (or your
-        local <code>.env</code>) under exactly this name:
+        Paste the company's new DriveHOS API key. It is stored encrypted on this
+        server, never written into config.yaml, and never shown again.
       </p>
       <div class="field">
-        <label>Environment variable name
-          <input type="text" name="company_key_env" placeholder="e.g. MILEMAX_COMPANY_KEY"
-                 pattern="[A-Za-z_][A-Za-z0-9_]*"
-                 title="Letters, digits and underscores only — no spaces.">
+        <label>API key
+          <input type="password" name="api_key" autocomplete="off"
+                 placeholder="the company's DriveHOS API key">
         </label>
       </div>
       <p class="hint">
-        Convention is <code>&lt;CARRIER&gt;_COMPANY_KEY</code>. Leave blank to clear it.
-        After setting the value on Railway, redeploy (or restart) for the new key
-        to take effect.
+        Takes effect on the next poll cycle — no redeploy needed.
       </p>
       <div class="actions">
         <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
