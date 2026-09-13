@@ -409,6 +409,20 @@ def run_dashboard(config: Config) -> int:
         print(f"token check FAILED — {tok.error}", file=sys.stderr)
         return 1
 
+    # Always say which bot this deploy is pointed at. The username is public,
+    # and when staging and production print the same one it means they share a
+    # token — which is what makes two command loops fight over getUpdates.
+    # In SAFE_MODE check_token() is a no-op, so probe separately for the name.
+    if safe_mode:
+        try:
+            probe = TelegramSender(config.secrets.telegram_bot_token).check_token()
+            ident = probe.kind if probe.ok else f"unknown ({probe.error})"
+        except Exception as exc:  # placeholder token, network, etc.
+            ident = f"unknown ({exc})"
+    else:
+        ident = tok.kind
+    logging.info("telegram bot identity: %s", ident)
+
     for name in ("DASHBOARD_ADMIN_PASSWORD", "DASHBOARD_SECRET_KEY"):
         if not os.environ.get(name):
             print(f"--serve requires {name} to be set in the environment", file=sys.stderr)

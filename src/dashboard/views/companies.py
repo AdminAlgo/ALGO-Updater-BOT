@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import re
+
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 
 from .. import config_writer
 from ..auth import login_required
 
 bp = Blueprint("companies", __name__, url_prefix="/companies")
+
+
+def _valid_key_env(name: str) -> bool:
+    """A company_key_env must be a usable shell/env identifier.
+
+    Worth enforcing here: a name with a space in it (`MILEMAX LLC`) can be set
+    on Railway without complaint but can never be read back by the loader, so
+    the company silently disables itself every cycle.
+    """
+    return bool(name) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is not None
 
 
 def _counters(runtime, config):
@@ -83,8 +95,13 @@ def new():
     chat_id = request.form.get("driver_group_chat_id", "").strip()
     usdot = request.form.get("usdot", "").strip()
     mc_number = request.form.get("mc_number", "").strip()
+    key_env = request.form.get("company_key_env", "").strip()
     if not name or provider not in ("factor", "leader") or not chat_id:
         flash("Name, provider (factor/leader), and chat id are required.", "error")
+        return redirect(url_for("companies.index"))
+    if not _valid_key_env(key_env):
+        flash("API key env var name is required, and may contain only letters, "
+              "digits and underscores (no spaces).", "error")
         return redirect(url_for("companies.index"))
     company = {
         "name": name,
@@ -94,6 +111,7 @@ def new():
         "monitor_all_drivers": True,
         "usdot": usdot,
         "mc_number": mc_number,
+        "company_key_env": key_env,
     }
     with runtime.lock:
         try:
@@ -103,6 +121,41 @@ def new():
         else:
             flash(f"Added {name}, disabled by default — enable once its API key is verified "
                   f"(python main.py --eld-check).", "ok")
+    return redirect(url_for("companies.index"))
+
+
+@bp.post("/<name>/key-env")
+@login_required
+def key_env(name):
+    """Point a company at the env var holding its API key (§4.3 / §7 option c).
+
+    The secret itself still lives only in Railway/.env — this stores the *name*
+    so the loader can find it. Without this a company added through the panel
+    has no company_key_env at all and can never be enabled.
+    """
+    runtime = current_app.config["RUNTIME"]
+    value = request.form.get("company_key_env", "").strip()
+    if value and not _valid_key_env(value):
+        flash("Env var name may contain only letters, digits and underscores "
+              "(no spaces).", "error")
+        return redirect(url_for("companies.index"))
+    with runtime.lock:
+        try:
+            # Pass "" rather than None to clear: update_company filters None out,
+            # and load_config treats an empty string as "not configured" (it only
+            # rejects that for a company that is still enabled).
+            config_writer.update_company(
+                name, {"company_key_env": value},
+                runtime.config_path, runtime.env_path,
+            )
+        except Exception as exc:
+            flash(f"Could not update {name}: {exc}", "error")
+        else:
+            if value:
+                flash(f"{name} now reads its API key from {value}. Set that "
+                      f"variable on Railway, then redeploy and enable it.", "ok")
+            else:
+                flash(f"Cleared the API key variable name for {name}.", "ok")
     return redirect(url_for("companies.index"))
 
 

@@ -36,7 +36,8 @@
             </button>
             <button type="button"
                     data-open-modal="apiKeyModal"
-                    data-field-env_name="{{ c.company_key_env or '(none configured)' }}">
+                    data-id="{{ c.name }}"
+                    data-field-company_key_env="{{ c.company_key_env or '' }}">
               Change API key
             </button>
             <form method="post" action="{{ url_for('companies.toggle', name=c.name) }}">
@@ -83,6 +84,16 @@
       </select>
     </label>
     <label>Driver group chat id <input type="text" name="driver_group_chat_id" required></label>
+    <label>API key env var name
+      <input type="text" name="company_key_env" required
+             placeholder="e.g. SOLEH_EXPRESS_COMPANY_KEY"
+             pattern="[A-Za-z_][A-Za-z0-9_]*"
+             title="Letters, digits and underscores only — no spaces.">
+    </label>
+    <p class="hint" style="margin-top:-4px;">
+      The panel stores this <em>name</em> only. Set the actual key on Railway
+      under the same name, then enable the company.
+    </p>
     <button type="submit" class="btn">Add (disabled by default)</button>
   </form>
 </section>
@@ -106,15 +117,29 @@
 <div class="modal-overlay" id="apiKeyModalOverlay">
   <div class="modal" id="apiKeyModal">
     <h2>Change API key</h2>
-    <p class="hint" style="margin-top:0;">
-      This panel doesn't store secrets — update the value on Railway (or your
-      local <code>.env</code>) directly, under this environment variable name:
-    </p>
-    <div class="field"><input type="text" name="env_name" readonly onclick="this.select()"></div>
-    <p class="hint">After updating it, redeploy (or restart the service) for the new key to take effect.</p>
-    <div class="actions">
-      <button type="button" class="btn" data-close-modal>Close</button>
-    </div>
+    <form method="post" data-action-template="{{ url_for('companies.key_env', name='__ID__') }}">
+      <p class="hint" style="margin-top:0;">
+        This panel never stores the secret itself. It stores the <em>name</em> of
+        the environment variable that holds it — set the value on Railway (or your
+        local <code>.env</code>) under exactly this name:
+      </p>
+      <div class="field">
+        <label>Environment variable name
+          <input type="text" name="company_key_env" placeholder="e.g. MILEMAX_COMPANY_KEY"
+                 pattern="[A-Za-z_][A-Za-z0-9_]*"
+                 title="Letters, digits and underscores only — no spaces.">
+        </label>
+      </div>
+      <p class="hint">
+        Convention is <code>&lt;CARRIER&gt;_COMPANY_KEY</code>. Leave blank to clear it.
+        After setting the value on Railway, redeploy (or restart) for the new key
+        to take effect.
+      </p>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+        <button type="submit" class="btn">Save name</button>
+      </div>
+    </form>
   </div>
 </div>
 {% endblock %}
