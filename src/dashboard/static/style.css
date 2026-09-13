@@ -1,21 +1,235 @@
-:root { color-scheme: light dark; }
-body { font-family: system-ui, sans-serif; margin: 0; background: #f7f7f8; color: #1a1a1a; }
-nav { display: flex; gap: 1rem; align-items: center; padding: 0.75rem 1.5rem; background: #1a1a2e; }
-nav a { color: #fff; text-decoration: none; font-weight: 600; }
-nav a:hover { text-decoration: underline; }
-.logout-form { margin-left: auto; }
-.logout-form button { background: none; border: 1px solid #fff; color: #fff; padding: 0.25rem 0.75rem; border-radius: 4px; cursor: pointer; }
-main { max-width: 960px; margin: 2rem auto; padding: 0 1rem 3rem; }
-h1 { margin-top: 0; }
-table { border-collapse: collapse; width: 100%; margin: 1rem 0; background: #fff; }
-th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; }
-th { background: #eee; }
-.row-error td { background: #fdecea; }
-form { margin: 0.5rem 0; }
-label { display: block; margin-bottom: 0.5rem; }
-input, select, textarea, button { font: inherit; padding: 0.4rem; }
-button { cursor: pointer; }
-.flashes { list-style: none; padding: 0; }
-.flash-ok { color: #1a7f37; }
-.flash-error { color: #c0392b; }
-section { background: #fff; padding: 1rem 1.5rem; border-radius: 8px; margin-bottom: 1.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+/* ALGO Updater admin dashboard — dark theme (upgrade spec §6). */
+:root {
+  color-scheme: dark;
+  --bg: #0D1017;
+  --surface: #18191D;
+  --surface-hover: #1F2229;
+  --border: #2E3646;
+  --text: #E8EBF2;
+  --text-muted: #8B94A7;
+  --blue: #2F81F7;
+  --green: #31B289;
+  --red: #E24B4A;
+  --amber: #EF9F27;
+}
+
+/* Staging wears black/orange/yellow so it can never be mistaken for production
+   at a glance — the two panels are otherwise identical and only one of them
+   can page real drivers. --blue is the primary-action token throughout, so
+   repointing it at orange re-skins every button, link and active nav item;
+   green stays green for genuinely positive state (Active chips, "ok" flashes). */
+body[data-env="staging"] {
+  --bg: #0A0A0C;
+  --surface: #17140F;
+  --surface-hover: #211C14;
+  --border: #453218;
+  --text: #F4EDE2;
+  --text-muted: #A89881;
+  --blue: #F97316;
+  --amber: #FACC15;
+  --red: #EF4444;
+}
+.env-badge {
+  display: inline-block; margin-left: .5rem; padding: .1rem .4rem;
+  background: var(--blue); color: #1A1207; border-radius: 4px;
+  font-size: .62rem; font-weight: 700; letter-spacing: .08em; vertical-align: middle;
+}
+/* A thin warm rule across the top, visible on every page including login. */
+body[data-env="staging"]::before {
+  content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--blue), var(--amber), var(--red));
+  z-index: 100;
+}
+
+* { box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* --- Sidebar ------------------------------------------------------------ */
+.sidebar {
+  position: fixed;
+  top: 0; bottom: 0; left: 0;
+  width: 220px;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0;
+}
+.sidebar .brand {
+  padding: 0 1.25rem 1rem;
+  font-weight: 700;
+  letter-spacing: .02em;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: .75rem;
+}
+.sidebar nav { display: flex; flex-direction: column; gap: 2px; padding: 0 .6rem; flex: 1; }
+.sidebar nav a {
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: .55rem .75rem;
+  border-radius: 6px;
+  font-size: .92rem;
+}
+.sidebar nav a:hover { background: var(--surface-hover); color: var(--text); }
+.sidebar nav a.active { background: var(--surface); color: var(--text); box-shadow: inset 3px 0 0 var(--blue); }
+.sidebar .logout-form { padding: .6rem; }
+
+main {
+  margin-left: 220px;
+  padding: 2rem 2.5rem 4rem;
+  max-width: 1280px;
+}
+body.guest main { margin-left: 0; max-width: 420px; margin-inline: auto; padding-top: 4rem; }
+
+@media (max-width: 760px) {
+  .sidebar { position: static; width: 100%; flex-direction: row; align-items: center; padding: .5rem; }
+  .sidebar .brand { border: none; margin: 0; padding: 0 .75rem; }
+  .sidebar nav { flex-direction: row; overflow-x: auto; }
+  .sidebar .logout-form { margin-left: auto; padding: 0 .5rem; }
+  main { margin-left: 0; padding: 1.25rem 1rem 3rem; }
+}
+
+h1 { margin: 0 0 1.25rem; font-size: 1.4rem; }
+h2 { font-size: 1.05rem; margin-top: 0; }
+a { color: var(--blue); }
+
+/* --- Forms / inputs ------------------------------------------------------ */
+label { display: block; margin-bottom: .5rem; color: var(--text-muted); font-size: .85rem; }
+input, select, textarea { font: inherit; }
+input[type=text], input[type=password], input[type=number], select, textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: .5rem .6rem;
+}
+form { margin: .5rem 0; }
+
+button, .btn { font: inherit; cursor: pointer; }
+.btn {
+  display: inline-block;
+  background: var(--blue); color: #fff; border: none;
+  padding: .5rem 1rem; border-radius: 6px; font-weight: 600; font-size: .88rem;
+  text-decoration: none;
+}
+.btn:hover { filter: brightness(1.12); }
+.btn-secondary { background: var(--surface-hover); color: var(--text); border: 1px solid var(--border); }
+.btn-danger { background: var(--red); color: #fff; border: none; }
+.btn-sm { padding: .3rem .6rem; font-size: .78rem; }
+
+/* --- Flashes -------------------------------------------------------------- */
+.flashes { list-style: none; padding: 0; margin: 0 0 1.25rem; }
+.flash-ok { color: var(--green); }
+.flash-error { color: var(--red); }
+
+/* --- Cards ----------------------------------------------------------------*/
+section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 1.25rem 1.5rem;
+  border-radius: 10px;
+  margin-bottom: 1.5rem;
+}
+
+/* --- Tables --------------------------------------------------------------*/
+table {
+  /* "separate" + explicit corner radii below, rather than collapse +
+     overflow:hidden: overflow:hidden clipped every row's ⋮ menu, which made the
+     menu unreachable on the last rows of a table. */
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 1rem 0;
+}
+thead tr:first-child th:first-child { border-top-left-radius: 7px; }
+thead tr:first-child th:last-child { border-top-right-radius: 7px; }
+tbody tr:last-child td:first-child { border-bottom-left-radius: 7px; }
+tbody tr:last-child td:last-child { border-bottom-right-radius: 7px; }
+tbody tr:last-child td { border-bottom: none; }
+th, td { padding: .5rem .9rem; text-align: left; border-bottom: 1px solid var(--border); height: 37px; }
+th {
+  background: var(--surface-hover); color: var(--text-muted);
+  font-size: .74rem; text-transform: uppercase; letter-spacing: .04em;
+}
+tbody tr:hover td { background: var(--surface-hover); }
+tbody tr:last-child td { border-bottom: none; }
+.row-error td { background: rgba(226, 75, 74, .08); }
+.row-ok td {}
+
+/* --- Chips / status -------------------------------------------------------*/
+.chip {
+  display: inline-block; padding: .15rem .55rem; border-radius: 999px;
+  font-size: .76rem; font-weight: 600; white-space: nowrap;
+}
+.chip-blue { background: rgba(47, 129, 247, .16); color: var(--blue); }
+.chip-green { background: rgba(49, 178, 137, .16); color: var(--green); }
+.chip-red { background: rgba(226, 75, 74, .16); color: var(--red); }
+.chip-amber { background: rgba(239, 159, 39, .16); color: var(--amber); }
+.chip-muted { background: rgba(139, 148, 167, .16); color: var(--text-muted); }
+.text-red { color: var(--red); font-weight: 600; }
+.text-muted { color: var(--text-muted); }
+.text-amber { color: var(--amber); }
+
+/* --- Callouts ---------------------------------------------------------- */
+.callout { padding: .8rem 1rem; border-radius: 8px; margin-bottom: 1.25rem; font-size: .9rem; }
+.callout-red { background: rgba(226, 75, 74, .12); border: 1px solid rgba(226, 75, 74, .35); color: #ffb4b3; }
+.callout-red a { color: #fff; }
+.callout-amber { background: rgba(239, 159, 39, .12); border: 1px solid rgba(239, 159, 39, .35); color: #ffd9a0; }
+
+/* --- Kebab (⋮) row menu ----------------------------------------------- */
+.kebab { position: relative; display: inline-block; }
+.kebab > .kebab-btn {
+  background: none; border: none; color: var(--text-muted);
+  font-size: 1.1rem; line-height: 1; cursor: pointer; padding: .3rem .55rem; border-radius: 5px;
+}
+.kebab > .kebab-btn:hover { background: var(--surface-hover); color: var(--text); }
+.kebab .menu {
+  display: none; position: absolute; right: 0; top: calc(100% + 2px);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  min-width: 170px; z-index: 30; box-shadow: 0 10px 28px rgba(0, 0, 0, .45); overflow: hidden;
+}
+.kebab.open .menu { display: block; }
+.kebab.drop-up .menu { top: auto; bottom: calc(100% + 2px); }
+.kebab .menu button, .kebab .menu a {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text); padding: .55rem .9rem; font-size: .85rem; cursor: pointer; text-decoration: none;
+}
+.kebab .menu button:hover, .kebab .menu a:hover { background: var(--surface-hover); }
+.kebab .menu .danger { color: var(--red); }
+.kebab .menu form { margin: 0; }
+
+/* --- Expand row (▸ Companies) ------------------------------------------- */
+.expand-toggle { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: .85rem; padding: 0 .3rem; }
+.expand-toggle:hover { color: var(--text); }
+.expand-row { display: none; }
+.expand-row.open { display: table-row; }
+.expand-row td { background: var(--bg); padding: 0; }
+.expand-row table { margin: .5rem; width: calc(100% - 1rem); }
+
+/* --- Modal --------------------------------------------------------------*/
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, .6);
+  z-index: 50; align-items: center; justify-content: center; padding: 1rem;
+}
+.modal-overlay.open { display: flex; }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; width: min(480px, 100%); max-height: 88vh; overflow: auto; }
+.modal h2 { margin-top: 0; }
+.modal .field { margin-bottom: .9rem; }
+.modal .checks { display: flex; flex-wrap: wrap; gap: .6rem 1.2rem; }
+.modal .checks label { display: flex; align-items: center; gap: .4rem; color: var(--text); font-size: .87rem; margin: 0; }
+.modal .checks input { width: auto; }
+.modal .actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1.25rem; }
+.modal .hint { color: var(--text-muted); font-size: .78rem; margin-top: .25rem; }
+
+/* --- Login page ----------------------------------------------------------*/
+.login-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 2rem; }

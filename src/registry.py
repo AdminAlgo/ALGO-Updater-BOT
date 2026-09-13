@@ -233,7 +233,9 @@ class GroupRegistry:
                  matched_on: str, driver_name: str) -> bool:
         """Record/refresh a driver's group. Returns True if newly added/changed.
 
-        Preserves any captured Telegram tag (tg_username / tg_user_id).
+        Preserves any captured Telegram tag (tg_username / tg_user_id) and any
+        dashboard-managed settings (dispatch_chat_id / language / disabled_kinds)
+        so re-discovery (title match) never wipes them out.
         """
         prev = self._drivers.get(driver_id) or {}
         changed = not prev or prev.get("chat_id") != str(chat_id)
@@ -244,8 +246,58 @@ class GroupRegistry:
             "driver_name": driver_name,
             "tg_username": prev.get("tg_username"),
             "tg_user_id": prev.get("tg_user_id"),
+            "dispatch_chat_id": prev.get("dispatch_chat_id"),
+            "language": prev.get("language") or "en",
+            "disabled_kinds": list(prev.get("disabled_kinds") or []),
         }
         return changed
+
+    # --- dashboard-managed per-driver settings (upgrade spec §3.1) --------- #
+    # A record's dispatch_chat_id / language / disabled_kinds may be absent on
+    # old registry.json entries — every reader below defaults via .get(), so no
+    # migration step is needed; old records keep working unmodified.
+    def dispatch_chat_for(self, driver_id: str) -> str | None:
+        rec = self._drivers.get(driver_id)
+        return (rec.get("dispatch_chat_id") if rec else None) or None
+
+    def language_for(self, driver_id: str) -> str:
+        rec = self._drivers.get(driver_id)
+        return (rec.get("language") if rec else None) or "en"
+
+    def disabled_kinds_for(self, driver_id: str) -> list[str]:
+        rec = self._drivers.get(driver_id)
+        return list(rec.get("disabled_kinds") or []) if rec else []
+
+    _UNSET = object()
+
+    def update_driver_settings(self, driver_id: str, *, driver_name: str | None = None,
+                               chat_id: str | None = None,
+                               dispatch_chat_id=_UNSET,
+                               language: str | None = None,
+                               disabled_kinds: list[str] | None = None) -> None:
+        """Create-or-update the fields the Drivers-page Edit modal manages.
+
+        ``dispatch_chat_id`` defaults to a sentinel so "not passed" (leave
+        unchanged) is distinguishable from "passed as None/empty" (clear it).
+        Creates a bare record if this driver has no group yet (Phase 1's "Add
+        driver" is assigning an existing roster driver, not creating one).
+        """
+        rec = self._drivers.setdefault(driver_id, {
+            "chat_id": "", "title": "", "matched_on": "manual",
+            "driver_name": driver_name or driver_id,
+            "tg_username": None, "tg_user_id": None,
+            "dispatch_chat_id": None, "language": "en", "disabled_kinds": [],
+        })
+        if driver_name:
+            rec["driver_name"] = driver_name
+        if chat_id is not None:
+            rec["chat_id"] = str(chat_id)
+        if dispatch_chat_id is not GroupRegistry._UNSET:
+            rec["dispatch_chat_id"] = str(dispatch_chat_id) if dispatch_chat_id else None
+        if language is not None:
+            rec["language"] = language
+        if disabled_kinds is not None:
+            rec["disabled_kinds"] = list(disabled_kinds)
 
     # --- driver Telegram tag (for @mentions) --- #
     # Readers iterate over a snapshot copy: the scheduler thread reads the

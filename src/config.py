@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src import key_store
+
 try:
     import yaml
 except ImportError as exc:  # pragma: no cover - dependency guard
@@ -125,6 +127,9 @@ class Company:
     company_key_env: str | None = None
     # Resolved value of that variable (never written to config.yaml or logs).
     company_key: str | None = field(default=None, repr=False)
+    # Display/audit only — never validated against DOT's own database.
+    usdot: str | None = None
+    mc_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -329,14 +334,20 @@ def _parse_companies(raw_companies: Any, problems: list[str]) -> list[Company]:
             company_key_env = company_key_env.strip()
             raw_key = os.environ.get(company_key_env)
             company_key = raw_key.strip() if raw_key and raw_key.strip() else None
+            if company_key is None:
+                # Not a host variable — fall back to a key typed into the admin
+                # panel, which is kept encrypted on the data volume. Host wins,
+                # so the existing companies keep using their Railway variables.
+                company_key = key_store.get(company_key_env)
             if enabled and company_key is None:
                 # Deployment-environment mismatch (e.g. the variable was never
                 # added on the host). One company's missing key must not take
                 # the whole service down — disable just this company and keep
                 # every other company alerting.
                 log.error(
-                    "%s (%s): environment variable %s (company_key_env) is "
-                    "missing or empty — company DISABLED until it is set",
+                    "%s (%s): no API key found for %s (company_key_env) — "
+                    "not set as an environment variable and not stored in the "
+                    "admin panel; company DISABLED until one is provided",
                     where, name, company_key_env,
                 )
                 enabled = False
@@ -389,14 +400,26 @@ def _parse_companies(raw_companies: Any, problems: list[str]) -> list[Company]:
                     drivers=drivers,
                     company_key_env=company_key_env,
                     company_key=company_key,
+                    usdot=(raw.get("usdot") or "").strip() or None,
+                    mc_number=(raw.get("mc_number") or "").strip() or None,
                 )
             )
 
     return companies
 
 
+def default_config_path() -> str:
+    """Where config.yaml lives — CONFIG_PATH overrides the repo copy.
+
+    Companies added through the admin panel are written back to this file, so on
+    a host with an ephemeral filesystem it has to point at a mounted volume or
+    every panel-added company is lost on the next deploy.
+    """
+    return (os.environ.get("CONFIG_PATH") or "").strip() or "config.yaml"
+
+
 def load_config(
-    config_path: str | Path = "config.yaml",
+    config_path: str | Path | None = None,
     env_path: str | Path = ".env",
 ) -> Config:
     """Load and validate configuration from .env and config.yaml.
@@ -405,6 +428,8 @@ def load_config(
         ConfigError: if anything required is missing or malformed. The error
             message lists every problem found.
     """
+    if config_path is None:
+        config_path = default_config_path()
     problems: list[str] = []
 
     # Load .env (does not override already-set process env vars).

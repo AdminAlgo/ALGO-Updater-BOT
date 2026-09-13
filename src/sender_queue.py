@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 log = logging.getLogger("eld_alert_bot")
 
@@ -110,6 +110,23 @@ class SendQueue:
 
             last_sent = time.monotonic()
             self._chat_sent_at[chat_id].append(last_sent)
+
+            # Dispatch fan-out (upgrade spec §5.2): identical message to a
+            # driver's second group. Best-effort — never affects de-dup state,
+            # stats, or the primary alert's retry/commit logic above.
+            for extra in getattr(alert, "extra_chat_ids", ()) or ():
+                if not extra:
+                    continue
+                self._wait_for_chat_budget(str(extra))
+                extra_gap = self._min_gap - (time.monotonic() - last_sent)
+                if extra_gap > 0:
+                    time.sleep(extra_gap)
+                extra_result = self._sender.send_alert(replace(alert, chat_id=extra))
+                last_sent = time.monotonic()
+                self._chat_sent_at[str(extra)].append(last_sent)
+                if not extra_result.ok:
+                    log.error("dispatch fan-out send FAILED [%s] %s -> chat %s: %s",
+                             alert.kind, alert.driver_name, extra, extra_result.error)
 
             if alert.dedupe_key:
                 self._queued_keys.discard(alert.dedupe_key)

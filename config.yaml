@@ -112,3 +112,10 @@ companies:
   monitor_all_drivers: true
   driver_group_chat_id: '-5228573261'
   company_key_env: MILEMAX_COMPANY_KEY
+- name: SOLEH EXPRESS INC
+  provider: factor
+  enabled: true
+  monitor_all_drivers: true
+  driver_group_chat_id: '-5228573261'
+  company_key_env: SOLEH_EXPRESS_COMPANY_KEY
+  usdot: '4150645'

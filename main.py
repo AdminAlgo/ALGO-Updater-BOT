@@ -23,10 +23,13 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
+from src import config as config_module
 from src.activity_log import ActivityLog
 from src.commands import run_command_loop
 from src.config import Config, ConfigError, load_config, mask_chat_id, mask_secret
@@ -44,6 +47,32 @@ DATA_DIR = os.environ.get("DATA_DIR", ".")
 STATE_FILE = os.path.join(DATA_DIR, "alert_state.json")
 REGISTRY_FILE = os.path.join(DATA_DIR, "driver_groups.json")
 ACTIVITY_LOG_FILE = os.path.join(DATA_DIR, "activity_log.json")
+SEND_LOG_FILE = os.path.join(DATA_DIR, "send_log.jsonl")
+MESSAGE_TEMPLATES_FILE = os.path.join(DATA_DIR, "message_templates.json")
+
+# config.yaml normally comes from the repo, but the admin panel writes companies
+# back to it, so on Railway it has to sit on the volume too — CONFIG_PATH points
+# there and _seed_config_file() copies the repo's copy across on first boot.
+CONFIG_FILE = config_module.default_config_path()
+REPO_CONFIG_FILE = "config.yaml"
+
+
+def _seed_config_file() -> None:
+    """Copy the repo's config.yaml onto the volume the first time only.
+
+    After that the volume copy is authoritative — it holds companies added
+    through the panel, which the repo copy knows nothing about, so it must never
+    be overwritten on a later boot.
+    """
+    target = Path(CONFIG_FILE)
+    if target == Path(REPO_CONFIG_FILE) or target.exists():
+        return
+    source = Path(REPO_CONFIG_FILE)
+    if not source.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    logging.info("seeded %s from the repo's config.yaml (first boot)", target)
 
 
 def _setup_logging() -> None:
@@ -262,7 +291,8 @@ def notify(config: Config, dry_run: bool) -> int:
     print(f"registered driver groups: {registry.count()}")
 
     stats = run_cycle(config, sender, state, registry=registry,
-                       activity_log=activity_log)
+                       activity_log=activity_log,
+                       send_log_path=None if dry_run else SEND_LOG_FILE)
     print(
         f"\nCycle complete — alerts: {stats.alerts}, sent: {stats.sent}, "
         f"failed: {stats.failed}, registered: {stats.registered}, "
@@ -382,16 +412,45 @@ def run_dashboard(config: Config) -> int:
 
     This is the Railway --serve mode: one process, one public web service.
     Requires DASHBOARD_ADMIN_PASSWORD + DASHBOARD_SECRET_KEY in the environment.
+
+    SAFE_MODE=1 (the staging deploy) stops *alerts* reaching drivers: the
+    scheduler evaluates every rule as usual but its sender only prints. Admin
+    commands still work for real, so /assign and group discovery are testable —
+    they only ever reply in a group somebody deliberately added this bot to.
+    That split is only safe because staging runs its own bot token; two deploys
+    sharing one token would fight over getUpdates, since the command loop is the
+    sole consumer. The bot identity is logged below — check it before pointing a
+    second deploy at a token already in use.
     """
     _setup_logging()
     _warn_if_data_dir_ephemeral()
-    sender = _make_sender(config, dry_run=False)
+    safe_mode = os.environ.get("SAFE_MODE", "").strip().lower() in ("1", "true", "yes")
+    if safe_mode:
+        logging.warning(
+            "SAFE_MODE is on — alerts are evaluated and logged but never sent. "
+            "Admin commands (/assign etc.) still reply for real."
+        )
+    sender = _make_sender(config, dry_run=safe_mode)
     if sender is None:
         return 1
     tok = sender.check_token()
     if not tok.ok:
         print(f"token check FAILED — {tok.error}", file=sys.stderr)
         return 1
+
+    # Always say which bot this deploy is pointed at. The username is public,
+    # and when staging and production print the same one it means they share a
+    # token — which is what makes two command loops fight over getUpdates.
+    # In SAFE_MODE check_token() is a no-op, so probe separately for the name.
+    if safe_mode:
+        try:
+            probe = TelegramSender(config.secrets.telegram_bot_token).check_token()
+            ident = probe.kind if probe.ok else f"unknown ({probe.error})"
+        except Exception as exc:  # placeholder token, network, etc.
+            ident = f"unknown ({exc})"
+    else:
+        ident = tok.kind
+    logging.info("telegram bot identity: %s", ident)
 
     for name in ("DASHBOARD_ADMIN_PASSWORD", "DASHBOARD_SECRET_KEY"):
         if not os.environ.get(name):
@@ -410,10 +469,13 @@ def run_dashboard(config: Config) -> int:
     registry = GroupRegistry(REGISTRY_FILE)
     activity_log = ActivityLog(ACTIVITY_LOG_FILE)
     roster = RosterCache(load_config)
+    from src.templates_store import TemplateStore
+    template_store = TemplateStore(MESSAGE_TEMPLATES_FILE)
     runtime = RuntimeContext(
-        config_path="config.yaml", env_path=".env",
+        config_path=CONFIG_FILE, env_path=".env",
         registry=registry, state=state, activity_log=activity_log,
-        roster_cache=roster,
+        roster_cache=roster, sender=sender, template_store=template_store,
+        send_log_path=SEND_LOG_FILE,
     )
 
     def _on_cycle(stats):
@@ -427,7 +489,7 @@ def run_dashboard(config: Config) -> int:
             config=config, sender=sender, state=state, registry=registry,
             activity_log=activity_log, roster_cache=roster,
             config_loader=load_config, on_cycle=_on_cycle,
-            stop_event=stop_event, discover=False,
+            stop_event=stop_event, discover=False, send_log_path=SEND_LOG_FILE,
         ),
         daemon=True, name="scheduler",
     )
@@ -437,7 +499,12 @@ def run_dashboard(config: Config) -> int:
     # runtime.lock with the dashboard's registry edits; the scheduler only reads
     # the registry (discover=False), so it holds no lock during a cycle and a
     # command never waits on a DriveHOS fetch.
-    _start_command_loop(config, sender, registry, roster, lock=runtime.lock,
+    # Under SAFE_MODE the scheduler's sender is dry-run, but commands need to
+    # answer the person who typed them, so the loop gets a live sender of its own.
+    command_sender = _make_sender(config, dry_run=False) if safe_mode else sender
+    if command_sender is None:
+        return 1
+    _start_command_loop(config, command_sender, registry, roster, lock=runtime.lock,
                         stop_event=stop_event)
 
     app = create_app(runtime)
@@ -448,6 +515,9 @@ def run_dashboard(config: Config) -> int:
 
 
 def main(argv: list[str]) -> int:
+    # Must happen before the first load_config(): on a fresh volume the target
+    # doesn't exist yet, and load_config() would fail on the missing file.
+    _seed_config_file()
     try:
         config = load_config()
     except ConfigError as exc:

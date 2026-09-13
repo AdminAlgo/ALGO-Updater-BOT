@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
+from . import send_log
 from .eld import ELDError, build_provider
 from .rules import evaluate_company
 from .sender_queue import SendQueue
@@ -39,7 +40,8 @@ class CycleStats:
 
 
 def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
-              activity_log=None, discover: bool = True, roster_cache=None) -> CycleStats:
+              activity_log=None, discover: bool = True, roster_cache=None,
+              send_log_path=None) -> CycleStats:
     """Execute one polling cycle. Returns stats; persists state at the end.
 
     Order: fetch all snapshots → (registry) discover/match driver groups from
@@ -125,6 +127,11 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
                 driver_name=alert.driver_name, chat_id=str(alert.chat_id),
                 audience=alert.audience, ok=res.ok, error=res.error,
             ))
+        send_log.append(send_log_path, {
+            "ts": now.isoformat(), "kind": alert.kind, "company": alert.company,
+            "driver_id": alert.driver_id, "driver_name": alert.driver_name,
+            "chat_id": str(alert.chat_id), "audience": alert.audience, "ok": res.ok,
+        })
 
     drain = queue.drain(on_result=_on_result)
     stats.queue_drain_seconds = drain.drain_seconds
@@ -145,7 +152,8 @@ def run_forever(config, sender, state, *, registry=None,
                 stop_event: threading.Event | None = None,
                 max_cycles: int | None = None,
                 discover: bool = True,
-                roster_cache=None) -> None:
+                roster_cache=None,
+                send_log_path=None) -> None:
     """Loop run_cycle every poll_interval_seconds until stopped.
 
     stop_event : set it to request a graceful stop (also wired to SIGINT/SIGTERM).
@@ -190,7 +198,7 @@ def run_forever(config, sender, state, *, registry=None,
             with (cycle_lock or contextlib.nullcontext()):
                 stats = run_cycle(config, sender, state, registry=registry,
                                    activity_log=activity_log, discover=discover,
-                                   roster_cache=roster_cache)
+                                   roster_cache=roster_cache, send_log_path=send_log_path)
             if on_cycle is not None:
                 on_cycle(stats)
             cov = registry.coverage() if registry is not None else {"tagged": 0, "total": 0}

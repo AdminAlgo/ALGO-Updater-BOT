@@ -1,20 +1,70 @@
 {% extends "base.html" %}
-{% block title %}Companies — ELD Alert Bot{% endblock %}
+{% block title %}Companies — ALGO Updater{% endblock %}
 {% block content %}
 <h1>Companies</h1>
 <table>
-  <thead><tr><th>Name</th><th>Provider</th><th>Drivers</th><th>Enabled</th><th></th></tr></thead>
+  <thead>
+    <tr>
+      <th></th><th>Name</th><th>USDOT</th><th>Provider</th><th>Drivers</th>
+      <th>Low time</th><th>Disconnected</th><th>Status</th><th></th>
+    </tr>
+  </thead>
   <tbody>
     {% for c in companies %}
+    {% set cnt = counters.get(c.name, {"total": 0, "low_time": 0, "disconnected": 0}) %}
     <tr>
+      <td><button type="button" class="expand-toggle" data-expand-target="expand-{{ loop.index }}">▸</button></td>
       <td>{{ c.name }}</td>
+      <td>{{ c.usdot or '—' }}</td>
       <td>{{ c.provider }}</td>
       <td>{{ 'ALL active' if c.monitor_all_drivers else c.drivers|length }}</td>
-      <td>{{ 'yes' if c.enabled else 'no' }}</td>
+      <td>{{ cnt.low_time }}/{{ cnt.total }}</td>
+      <td>{{ cnt.disconnected }}/{{ cnt.total }}</td>
+      <td><span class="chip {{ 'chip-green' if c.enabled else 'chip-red' }}">{{ 'Active' if c.enabled else 'Suspended' }}</span></td>
       <td>
-        <form method="post" action="{{ url_for('companies.toggle', name=c.name) }}">
-          <button type="submit">{{ 'Disable' if c.enabled else 'Enable' }}</button>
-        </form>
+        <div class="kebab">
+          <button type="button" class="kebab-btn" aria-label="Actions">⋮</button>
+          <div class="menu">
+            <button type="button"
+                    data-open-modal="editCompanyModal"
+                    data-id="{{ c.name }}"
+                    data-field-name="{{ c.name }}"
+                    data-field-usdot="{{ c.usdot or '' }}"
+                    data-field-mc_number="{{ c.mc_number or '' }}"
+                    data-field-low_hours_closing="{{ c.low_hours_closing or '' }}">
+              Edit
+            </button>
+            <button type="button"
+                    data-open-modal="apiKeyModal"
+                    data-id="{{ c.name }}"
+                    data-field-company_key_env="{{ c.company_key_env or '' }}">
+              Change API key
+            </button>
+            <form method="post" action="{{ url_for('companies.toggle', name=c.name) }}">
+              <button type="submit">{{ 'Disable' if c.enabled else 'Enable' }}</button>
+            </form>
+            <a href="{{ url_for('drivers.index', company=c.name) }}">View drivers</a>
+          </div>
+        </div>
+      </td>
+    </tr>
+    <tr class="expand-row" id="expand-{{ loop.index }}">
+      <td colspan="9">
+        <table>
+          <thead><tr><th>Driver</th><th>ELD group</th><th>Dispatch group</th><th>Language</th></tr></thead>
+          <tbody>
+            {% for d in expanded.get(c.name, []) %}
+            <tr>
+              <td>{{ d.driver_name }}</td>
+              <td>{% if d.chat_id %}{{ d.title or d.chat_id }}{% else %}<span class="text-red">Not assigned</span>{% endif %}</td>
+              <td>{% if d.dispatch_chat_id %}{{ d.dispatch_chat_id }}{% else %}<span class="text-red">Not assigned</span>{% endif %}</td>
+              <td><span class="chip chip-blue">{{ (d.language or 'en')|upper }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="text-muted">No registered drivers for this company yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </td>
     </tr>
     {% endfor %}
@@ -24,15 +74,65 @@
 <section>
   <h2>Add a company</h2>
   <form method="post" action="{{ url_for('companies.new') }}">
-    <label>Name <input type="text" name="name" required></label>
+    <label>Name <input type="text" name="name" required placeholder="e.g. SOLEH EXPRESS INC"></label>
+    <label>USDOT (optional) <input type="text" name="usdot" placeholder="e.g. 4150645"></label>
     <label>Provider
       <select name="provider">
         <option value="factor">factor</option>
         <option value="leader">leader</option>
       </select>
     </label>
-    <label>Driver group chat id <input type="text" name="driver_group_chat_id" required></label>
-    <button type="submit">Add (disabled by default)</button>
+    <label>API key
+      <input type="password" name="api_key" required autocomplete="off"
+             placeholder="the company's DriveHOS API key">
+    </label>
+    <p class="hint" style="margin-top:-4px;">
+      Stored encrypted on this server — it is never written into config.yaml and
+      never shown again. The company is added paused; enable it once you've
+      checked the driver count looks right.
+    </p>
+    <button type="submit" class="btn">Add (disabled by default)</button>
   </form>
 </section>
+
+<div class="modal-overlay" id="editCompanyModalOverlay">
+  <div class="modal" id="editCompanyModal">
+    <h2>Edit company</h2>
+    <form method="post" data-action-template="{{ url_for('companies.edit', name='__ID__') }}">
+      <div class="field"><label>Name <input type="text" name="name" required></label></div>
+      <div class="field"><label>USDOT <input type="text" name="usdot"></label></div>
+      <div class="field"><label>MC# <input type="text" name="mc_number"></label></div>
+      <div class="field"><label>Low-hours closing line (optional) <input type="text" name="low_hours_closing"></label></div>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-overlay" id="apiKeyModalOverlay">
+  <div class="modal" id="apiKeyModal">
+    <h2>Change API key</h2>
+    <form method="post" data-action-template="{{ url_for('companies.key_env', name='__ID__') }}">
+      <p class="hint" style="margin-top:0;">
+        Paste the company's new DriveHOS API key. It is stored encrypted on this
+        server, never written into config.yaml, and never shown again.
+      </p>
+      <div class="field">
+        <label>API key
+          <input type="password" name="api_key" autocomplete="off"
+                 placeholder="the company's DriveHOS API key">
+        </label>
+      </div>
+      <p class="hint">
+        Takes effect on the next poll cycle — no redeploy needed.
+      </p>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+        <button type="submit" class="btn">Save name</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}
