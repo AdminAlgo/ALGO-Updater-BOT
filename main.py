@@ -385,10 +385,23 @@ def run_dashboard(config: Config) -> int:
 
     This is the Railway --serve mode: one process, one public web service.
     Requires DASHBOARD_ADMIN_PASSWORD + DASHBOARD_SECRET_KEY in the environment.
+
+    SAFE_MODE=1 (the staging deploy) keeps every other moving part identical but
+    never talks to Telegram: alerts are evaluated and printed instead of sent,
+    and the command loop is not started. That second part matters — the command
+    loop is the sole getUpdates consumer, and two deploys sharing one bot token
+    steal each other's updates, so a staging instance must not run it against a
+    production token.
     """
     _setup_logging()
     _warn_if_data_dir_ephemeral()
-    sender = _make_sender(config, dry_run=False)
+    safe_mode = os.environ.get("SAFE_MODE", "").strip().lower() in ("1", "true", "yes")
+    if safe_mode:
+        logging.warning(
+            "SAFE_MODE is on — no Telegram messages will be sent and the command "
+            "loop is disabled. Alerts are evaluated and logged only."
+        )
+    sender = _make_sender(config, dry_run=safe_mode)
     if sender is None:
         return 1
     tok = sender.check_token()
@@ -443,8 +456,9 @@ def run_dashboard(config: Config) -> int:
     # runtime.lock with the dashboard's registry edits; the scheduler only reads
     # the registry (discover=False), so it holds no lock during a cycle and a
     # command never waits on a DriveHOS fetch.
-    _start_command_loop(config, sender, registry, roster, lock=runtime.lock,
-                        stop_event=stop_event)
+    if not safe_mode:
+        _start_command_loop(config, sender, registry, roster, lock=runtime.lock,
+                            stop_event=stop_event)
 
     app = create_app(runtime)
     port = int(os.environ.get("PORT", 8000))
