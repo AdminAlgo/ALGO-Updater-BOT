@@ -13,6 +13,34 @@
   --amber: #EF9F27;
 }
 
+/* Staging wears black/orange/yellow so it can never be mistaken for production
+   at a glance — the two panels are otherwise identical and only one of them
+   can page real drivers. --blue is the primary-action token throughout, so
+   repointing it at orange re-skins every button, link and active nav item;
+   green stays green for genuinely positive state (Active chips, "ok" flashes). */
+body[data-env="staging"] {
+  --bg: #0A0A0C;
+  --surface: #17140F;
+  --surface-hover: #211C14;
+  --border: #453218;
+  --text: #F4EDE2;
+  --text-muted: #A89881;
+  --blue: #F97316;
+  --amber: #FACC15;
+  --red: #EF4444;
+}
+.env-badge {
+  display: inline-block; margin-left: .5rem; padding: .1rem .4rem;
+  background: var(--blue); color: #1A1207; border-radius: 4px;
+  font-size: .62rem; font-weight: 700; letter-spacing: .08em; vertical-align: middle;
+}
+/* A thin warm rule across the top, visible on every page including login. */
+body[data-env="staging"]::before {
+  content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, var(--blue), var(--amber), var(--red));
+  z-index: 100;
+}
+
 * { box-sizing: border-box; }
 body {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;

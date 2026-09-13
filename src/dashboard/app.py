@@ -16,11 +16,28 @@ from .runtime import RuntimeContext
 SEVEN_DAYS_SECONDS = 7 * 24 * 3600
 
 
+def environment_name() -> str:
+    """"staging" or "production" — drives the colour scheme and the header badge.
+
+    Two deploys of this panel look identical otherwise, and one of them can page
+    real drivers, so it must be obvious at a glance which one is open. Falls back
+    to Railway's own RAILWAY_ENVIRONMENT_NAME, so nothing extra has to be set.
+    """
+    name = (os.environ.get("APP_ENV")
+            or os.environ.get("RAILWAY_ENVIRONMENT_NAME")
+            or "").strip().lower()
+    return "staging" if name.startswith(("stag", "test", "dev")) else "production"
+
+
 def create_app(runtime: RuntimeContext) -> Flask:
     app = Flask(__name__)
     app.secret_key = os.environ["DASHBOARD_SECRET_KEY"]
     app.config["RUNTIME"] = runtime
     app.config["PERMANENT_SESSION_LIFETIME"] = SEVEN_DAYS_SECONDS
+
+    @app.context_processor
+    def _inject_env():
+        return {"app_env": environment_name()}
 
     from .views.auth import bp as auth_bp
     from .views.companies import bp as companies_bp

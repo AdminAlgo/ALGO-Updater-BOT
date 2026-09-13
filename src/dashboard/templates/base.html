@@ -7,10 +7,10 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script defer src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
-<body class="{{ 'authed' if session.get('authed') else 'guest' }}">
+<body class="{{ 'authed' if session.get('authed') else 'guest' }}" data-env="{{ app_env }}">
   {% if session.get('authed') %}
   <aside class="sidebar">
-    <div class="brand">ALGO Updater</div>
+    <div class="brand">ALGO Updater{% if app_env == 'staging' %}<span class="env-badge">TEST</span>{% endif %}</div>
     <nav>
       <a href="{{ url_for('status.index') }}" class="{{ 'active' if request.blueprint == 'status' else '' }}">Status</a>
       <a href="{{ url_for('watchlists.index') }}" class="{{ 'active' if request.blueprint == 'watchlists' else '' }}">Watchlists</a>
