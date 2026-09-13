@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Warnings — ALGO Updater{% endblock %}
+{% block content %}
+<h1>Warnings</h1>
+
+<section>
+  <h2>Compose &amp; send</h2>
+  <form method="post" action="{{ url_for('warnings.send') }}">
+    <label>Audience
+      <select name="audience" id="audienceSelect">
+        <option value="all">All companies</option>
+        <option value="company">One company</option>
+        <option value="driver">One driver</option>
+      </select>
+    </label>
+    <label id="companyField" style="display:none;">Company
+      <select name="company">
+        {% for name in companies %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label id="driverField" style="display:none;">Driver
+      <select name="driver_id">
+        {% for did, rec in drivers %}<option value="{{ did }}">{{ rec.driver_name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Template
+      <select name="template_id">
+        {% for t in templates %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+      </select>
+    </label>
+    {% if not templates %}<p class="text-muted">No templates yet — create one below first.</p>{% endif %}
+    <button type="submit" class="btn" {{ 'disabled' if not templates }}>Send now</button>
+  </form>
+  <script>
+    (function () {
+      var sel = document.getElementById('audienceSelect');
+      var company = document.getElementById('companyField');
+      var driver = document.getElementById('driverField');
+      function sync() {
+        company.style.display = sel.value === 'company' ? '' : 'none';
+        driver.style.display = sel.value === 'driver' ? '' : 'none';
+      }
+      if (sel) { sel.addEventListener('change', sync); sync(); }
+    })();
+  </script>
+</section>
+
+<section>
+  <h2>Template library</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Languages</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+      {% for t in templates %}
+      <tr>
+        <td>{{ t.name }}</td>
+        <td>{{ (t.text.keys()|list)|join(', ')|upper }}</td>
+        <td class="text-muted">{{ t.created[:10] }}</td>
+        <td>
+          <button type="button" class="btn btn-sm"
+                  data-open-modal="templateModal"
+                  data-id="{{ t.id }}"
+                  data-field-name="{{ t.name }}"
+                  data-field-template_id="{{ t.id }}"
+                  {% for code, _ in languages %}data-field-text_{{ code }}="{{ t.text.get(code, '') }}"{% endfor %}>
+            Edit
+          </button>
+          <form method="post" action="{{ url_for('warnings.delete_template', template_id=t.id) }}" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="text-muted">No templates yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <button type="button" class="btn"
+          data-open-modal="templateModal" data-id=""
+          data-field-name="" data-field-template_id=""
+          {% for code, _ in languages %}data-field-text_{{ code }}=""{% endfor %}>
+    + New template
+  </button>
+</section>
+
+<div class="modal-overlay" id="templateModalOverlay">
+  <div class="modal" id="templateModal">
+    <h2>Template</h2>
+    <form method="post" action="{{ url_for('warnings.save_template') }}">
+      <input type="hidden" name="template_id">
+      <div class="field"><label>Name <input type="text" name="name" required></label></div>
+      {% for code, label in languages %}
+      <div class="field">
+        <label>{{ label }}{{ ' (required)' if code == 'en' else ' (optional — falls back to English)' }}
+          <textarea name="text_{{ code }}" rows="3"></textarea>
+        </label>
+      </div>
+      {% endfor %}
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

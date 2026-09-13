@@ -81,6 +81,7 @@ def _attach_log_image(alerts: list, snap: DriverSnapshot, config) -> list:
 # Audience identifiers.
 DRIVER_GROUP = "driver_group"
 TEAM_GROUP = "team_group"
+DISPATCH_GROUP = "dispatch_group"  # a driver's own second group (upgrade spec §3.1)
 
 # Alert kinds.
 KIND_LOW_HOURS = "low_hours"
@@ -100,7 +101,7 @@ class Alert:
     """
 
     kind: str
-    audience: str          # DRIVER_GROUP | TEAM_GROUP
+    audience: str          # DRIVER_GROUP | TEAM_GROUP | DISPATCH_GROUP
     chat_id: str           # resolved target chat id
     company: str
     driver_name: str
@@ -109,6 +110,11 @@ class Alert:
     dedupe_key: str = field(default="")
     threshold: int | None = None  # the low-hours threshold this alert fired for
     image_png: bytes | None = field(default=None, repr=False)  # optional log card
+    # Upgrade spec §5.2 — a driver's own Dispatch group (registry.dispatch_chat_for)
+    # gets the identical message fanned out alongside the primary chat_id. This is
+    # a best-effort courtesy copy: delivery success/failure here never affects
+    # de-dup state (Alert.commit below only ever looks at the primary chat).
+    extra_chat_ids: tuple[str, ...] = field(default_factory=tuple)
     # User-ID mention (for drivers with no @username): the sender prepends the
     # name and attaches a text_mention entity so the driver is still pinged.
     mention_user_id: int | None = None
@@ -154,11 +160,22 @@ def evaluate_driver(
     did = snap.driver_id
     if registry is not None:
         driver_chat = registry.chat_for(did)  # None => not registered yet
+        dispatch_chat = registry.dispatch_chat_for(did)
+        language = registry.language_for(did)
+        disabled = set(registry.disabled_kinds_for(did))
     else:
         driver_chat = company.driver_group_chat_id
+        dispatch_chat = None
+        language = messages.DEFAULT_LANGUAGE
+        disabled = set()
     team_chat = getattr(company, "team_group_chat_id", None) or config.team_group_chat_id
     log_url = messages.render_log_url(getattr(config, "driver_log_url_template", None), snap)
     tag, mention_uid = _resolve_mention(snap, config, registry)  # @handle or user-id
+
+    def _extras(audience: str) -> tuple:
+        # Only the driver's own group also fans out to their Dispatch group —
+        # the shared TEAM_GROUP is a different, company-wide concept.
+        return (dispatch_chat,) if audience == DRIVER_GROUP and dispatch_chat else ()
     # A driver is "active" (and thus alertable for low-hours) only while in a
     # connection_required status (Driving / On Duty / Yard Move) — never while
     # Off Duty or in the Sleeper berth.
@@ -204,7 +221,7 @@ def evaluate_driver(
     if not active or (all_thresholds and min_minutes > max(all_thresholds)):
         state.reset_low_hours(did)
 
-    for audience, thresholds, chat_id in (audiences if active else ()):
+    for audience, thresholds, chat_id in (audiences if (active and KIND_LOW_HOURS not in disabled) else ()):
         if not chat_id:
             # Driver-group audience but this driver has no registered group yet.
             continue
@@ -225,9 +242,10 @@ def evaluate_driver(
                 company=company.name,
                 driver_name=snap.name,
                 driver_id=did,
-                text=messages.low_hours_text(snap, tag, log_url),
+                text=messages.low_hours_text(snap, tag, log_url, language),
                 dedupe_key=f"{did}:low:{audience}:{threshold}",
                 threshold=threshold,
+                extra_chat_ids=_extras(audience),
             )
         )
 
@@ -240,7 +258,7 @@ def evaluate_driver(
         if not active or cycle_hours > max(cycle_thr):
             state.reset_cycle(did)
 
-        if active:
+        if active and KIND_CYCLE not in disabled:
             crossed = sorted(t for t in cycle_thr if cycle_hours <= t)
             if crossed:
                 threshold = crossed[0]  # most urgent (smallest) crossed
@@ -261,16 +279,17 @@ def evaluate_driver(
                             company=company.name,
                             driver_name=snap.name,
                             driver_id=did,
-                            text=messages.cycle_text(snap, tag, log_url),
+                            text=messages.cycle_text(snap, tag, log_url, language),
                             dedupe_key=f"{did}:cycle:{audience}:{threshold}",
                             threshold=threshold,
+                            extra_chat_ids=_extras(audience),
                         )
                     )
 
     # --- Rule 2: shift limit violation ------------------------------------ #
     # Only a real violation if the driver is actually on duty/driving — a
     # Sleeper/Off-Duty driver whose shift timer reads 0 is resting, not violating.
-    in_violation = active and snap.hos.shift_seconds <= 0
+    in_violation = active and snap.hos.shift_seconds <= 0 and KIND_SHIFT_VIOLATION not in disabled
     if in_violation:
         resend_minutes = getattr(config, "shift_violation_resend_minutes", 30)
         max_resends = getattr(config, "shift_violation_max_resends", 5)
@@ -296,12 +315,20 @@ def evaluate_driver(
                         company=company.name,
                         driver_name=snap.name,
                         driver_id=did,
-                        text=messages.shift_violation_text(snap, config.shift_limit_hours, tag, log_url),
-                        dedupe_key=f"{did}:shift_violation:{'first' if first_send else resends_sent + 1}",
+                        text=messages.shift_violation_text(
+                            snap, config.shift_limit_hours, tag, log_url, language
+                        ),
+                        dedupe_key=(
+                            f"{did}:shift_violation:"
+                            f"{'first' if first_send else resends_sent + 1}:{audience}"
+                        ),
                         is_resend=not first_send,
+                        extra_chat_ids=_extras(audience),
                     )
                 )
     else:
+        # Disabling this kind clears the episode too (spec §5.3): re-enabling it
+        # later starts fresh instead of immediately resending a stale violation.
         state.clear_shift_violation(did)
 
     # --- Rule 3: ELD disconnected while active ---------------------------- #
@@ -313,13 +340,13 @@ def evaluate_driver(
             or snap.connection.is_stale(config.disconnect_stale_minutes, now)
         )
     )
-    if active and disconnected and driver_chat:
+    if active and disconnected and driver_chat and KIND_DISCONNECT not in disabled:
         if state.disconnect_due(did, config.disconnect_realert_minutes, now):
             # FIX-5: status_phrase always comes from the SAME snap the status
             # card is rendered from (_attach_log_image below), so the message
             # and the card can never disagree. An unrecognized duty status
             # means skip-and-log rather than guess at wording.
-            status_phrase = messages.disconnect_status_phrase(snap)
+            status_phrase = messages.disconnect_status_phrase(snap, language)
             if status_phrase is None:
                 log.error(
                     "disconnect alert for %s (%s) skipped — no message phrasing "
@@ -336,17 +363,19 @@ def evaluate_driver(
                         company=company.name,
                         driver_name=snap.name,
                         driver_id=did,
-                        text=messages.disconnect_text(snap, status_phrase, tag, log_url),
+                        text=messages.disconnect_text(snap, status_phrase, tag, log_url, language),
                         dedupe_key=f"{did}:disconnect",
+                        extra_chat_ids=_extras(DRIVER_GROUP),
                     )
                 )
     else:
-        # Reconnected or no longer active — reset so a future disconnect alerts.
+        # Reconnected, no longer active, or the kind is disabled — reset so a
+        # future (or re-enabled) disconnect alerts fresh.
         state.clear_disconnect(did)
 
     # --- Rule 4: prolonged On Duty (welfare check) ------------------------ #
     on_duty_hours = getattr(config, "on_duty_alert_hours", 0) or 0
-    if on_duty_hours and snap.duty_status_label == "On Duty":
+    if on_duty_hours and snap.duty_status_label == "On Duty" and KIND_ON_DUTY not in disabled:
         since_iso = state.on_duty_since(did)
         if not since_iso:
             state.set_on_duty_since(did, now.isoformat())  # entered On Duty now
@@ -368,12 +397,13 @@ def evaluate_driver(
                         company=company.name,
                         driver_name=snap.name,
                         driver_id=did,
-                        text=messages.on_duty_text(snap, on_duty_hours, tag, log_url),
+                        text=messages.on_duty_text(snap, on_duty_hours, tag, log_url, language),
                         dedupe_key=f"{did}:on_duty",
+                        extra_chat_ids=_extras(DRIVER_GROUP),
                     )
                 )
     else:
-        # Not On Duty (or disabled) — reset the episode.
+        # Not On Duty, or the kind is disabled — reset the episode.
         state.clear_on_duty(did)
 
     # No @username but we have a user-id -> attach a user-id mention so the

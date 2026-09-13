@@ -3,19 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}ELD Alert Bot{% endblock %}</title>
+  <title>{% block title %}ALGO Updater — Admin{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
-<body>
+<body class="{{ 'authed' if session.get('authed') else 'guest' }}">
   {% if session.get('authed') %}
-  <nav>
-    <a href="{{ url_for('status.index') }}">Status</a>
-    <a href="{{ url_for('companies.index') }}">Companies</a>
-    <a href="{{ url_for('drivers.index') }}">Drivers</a>
+  <aside class="sidebar">
+    <div class="brand">ALGO Updater</div>
+    <nav>
+      <a href="{{ url_for('status.index') }}" class="{{ 'active' if request.blueprint == 'status' else '' }}">Status</a>
+      <a href="{{ url_for('watchlists.index') }}" class="{{ 'active' if request.blueprint == 'watchlists' else '' }}">Watchlists</a>
+      <a href="{{ url_for('companies.index') }}" class="{{ 'active' if request.blueprint == 'companies' else '' }}">Companies</a>
+      <a href="{{ url_for('drivers.index') }}" class="{{ 'active' if request.blueprint == 'drivers' else '' }}">Drivers</a>
+      <a href="{{ url_for('warnings.index') }}" class="{{ 'active' if request.blueprint == 'warnings' else '' }}">Warnings</a>
+      <a href="{{ url_for('stats.index') }}" class="{{ 'active' if request.blueprint == 'stats' else '' }}">Statistics</a>
+    </nav>
     <form method="post" action="{{ url_for('auth.logout') }}" class="logout-form">
-      <button type="submit">Log out</button>
+      <button type="submit" class="btn btn-secondary" style="width:100%;">Log out</button>
     </form>
-  </nav>
+  </aside>
   {% endif %}
   <main>
     {% with messages = get_flashed_messages(with_categories=true) %}

@@ -1,56 +1,134 @@
 {% extends "base.html" %}
-{% block title %}Drivers — ELD Alert Bot{% endblock %}
+{% block title %}Drivers — ALGO Updater{% endblock %}
 {% block content %}
 <h1>Drivers</h1>
-<p>{{ coverage.tagged }} / {{ coverage.total }} tagged</p>
+<p class="text-muted">{{ coverage.tagged }} / {{ coverage.total }} tagged</p>
+{% if company_filter %}
+<p><span class="chip chip-blue">Filtered: {{ company_filter }}</span>
+   <a href="{{ url_for('drivers.index') }}">clear filter</a></p>
+{% endif %}
 
 {% for err in roster_errors %}<p class="flash-error">Roster fetch — {{ err }}</p>{% endfor %}
 
+{% if unassigned %}
+<div class="callout callout-red">
+  <strong>{{ unassigned|length }} driver{{ 's' if unassigned|length != 1 }}</strong>
+  on the live roster {{ 'has' if unassigned|length == 1 else 'have' }} no group assigned —
+  none of their alerts (including a 14h violation) have anywhere to go. See "Unassigned drivers" below.
+</div>
+{% endif %}
+
 <table>
-  <thead><tr><th>Driver</th><th>Group</th><th>Matched on</th><th>Telegram tag</th><th></th></tr></thead>
+  <thead>
+    <tr>
+      <th>Driver</th><th>ELD group</th><th>Dispatch group</th><th>Language</th>
+      <th>Matched on</th><th>Telegram tag</th><th></th>
+    </tr>
+  </thead>
   <tbody>
     {% for driver_id, rec in records.items() %}
     <tr>
       <td>{{ rec.driver_name }}</td>
-      <td>{{ rec.title or rec.chat_id }}</td>
+      <td>{% if rec.chat_id %}{{ rec.title or rec.chat_id }}{% else %}<span class="text-red">Not assigned</span>{% endif %}</td>
+      <td>{% if rec.dispatch_chat_id %}{{ rec.dispatch_chat_id }}{% else %}<span class="text-red">Not assigned</span>{% endif %}</td>
+      <td><span class="chip chip-blue">{{ (rec.language or 'en')|upper }}</span></td>
       <td>{{ rec.matched_on }}</td>
       <td>{{ ('@' ~ rec.tg_username) if rec.tg_username else (rec.tg_user_id or '—') }}</td>
       <td>
-        <form method="post" action="{{ url_for('drivers.unregister', driver_id=driver_id) }}">
-          <button type="submit">Remove</button>
-        </form>
+        <div class="kebab">
+          <button type="button" class="kebab-btn" aria-label="Actions">⋮</button>
+          <div class="menu">
+            <button type="button"
+                    data-open-modal="editModal"
+                    data-id="{{ driver_id }}"
+                    data-field-driver_name="{{ rec.driver_name }}"
+                    data-field-chat_id="{{ rec.chat_id }}"
+                    data-field-dispatch_chat_id="{{ rec.dispatch_chat_id or '' }}"
+                    data-field-language="{{ rec.language or 'en' }}"
+                    data-field-kinds="{{ alert_kinds|map(attribute=0)|reject('in', rec.disabled_kinds or [])|join(',') }}">
+              Edit
+            </button>
+            <form method="post" action="{{ url_for('drivers.unregister', driver_id=driver_id) }}">
+              <button type="submit">Unregister</button>
+            </form>
+            {% if driver_id in blocked_ids %}
+            <form method="post" action="{{ url_for('drivers.unblock', driver_id=driver_id) }}">
+              <button type="submit">Unblock</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="5">No driver groups registered yet.</td></tr>
+    <tr><td colspan="7">No driver groups registered yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>
 
+{% if unassigned %}
 <section>
-  <h2>Assign a driver to a group</h2>
-  <form method="post" action="{{ url_for('drivers.assign') }}">
-    <label>Driver
-      <select name="driver_id" id="driver_id" required>
-        {% for c in candidates %}
-        <option value="{{ c.driver_id }}">{{ c.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <input type="hidden" name="driver_name" id="driver_name">
-    <label>Telegram chat id <input type="text" name="chat_id" required></label>
-    <button type="submit">Assign</button>
-  </form>
-  <script>
-    (function () {
-      var sel = document.getElementById('driver_id');
-      var hidden = document.getElementById('driver_name');
-      function sync() {
-        var opt = sel.options[sel.selectedIndex];
-        hidden.value = opt ? opt.text : '';
-      }
-      if (sel) { sel.addEventListener('change', sync); sync(); }
-    })();
-  </script>
+  <h2>Unassigned drivers ({{ unassigned|length }})</h2>
+  <table>
+    <thead><tr><th>Driver</th><th>Company</th><th>Truck</th><th></th></tr></thead>
+    <tbody>
+      {% for c in unassigned %}
+      <tr>
+        <td>{{ c.name }}</td>
+        <td>{{ c.company or '—' }}</td>
+        <td>{{ c.truck or '—' }}</td>
+        <td>
+          <button type="button" class="btn btn-sm"
+                  data-open-modal="editModal"
+                  data-id="{{ c.driver_id }}"
+                  data-field-driver_name="{{ c.name }}"
+                  data-field-chat_id=""
+                  data-field-dispatch_chat_id=""
+                  data-field-language="en"
+                  data-field-kinds="{{ alert_kinds|map(attribute=0)|join(',') }}">
+            Assign
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </section>
+{% endif %}
+
+<div class="modal-overlay" id="editModalOverlay">
+  <div class="modal" id="editModal">
+    <h2>Edit driver</h2>
+    <form method="post" data-action-template="{{ url_for('drivers.edit', driver_id='__ID__') }}">
+      <input type="hidden" name="driver_name">
+      <div class="field">
+        <label>ELD group chat id <input type="text" name="chat_id" required placeholder="-100..."></label>
+      </div>
+      <div class="field">
+        <label>Dispatch group chat id (optional) <input type="text" name="dispatch_chat_id" placeholder="-100..."></label>
+      </div>
+      <div class="field">
+        <label>Language
+          <select name="language">
+            {% for code, label in languages %}
+            <option value="{{ code }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="field">
+        <label>Alerts enabled</label>
+        <div class="checks">
+          {% for code, label in alert_kinds %}
+          <label><input type="checkbox" name="kinds" value="{{ code }}"> {{ label }}</label>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}

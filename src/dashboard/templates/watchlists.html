@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Watchlists — ALGO Updater{% endblock %}
+{% block content %}
+<h1>Watchlists</h1>
+
+<section>
+  <h2>Disconnected now ({{ disconnected|length }})</h2>
+  <table>
+    <thead><tr><th>Driver</th><th>Company</th><th>Vehicle</th><th>Last seen</th><th>Duty status</th></tr></thead>
+    <tbody>
+      {% for r in disconnected %}
+      <tr>
+        <td>{{ r.name }}</td><td>{{ r.company }}</td><td>{{ r.vehicle }}</td>
+        <td>{{ r.last_seen }}</td><td>{{ r.duty_status }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="text-muted">Nobody is disconnected right now.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Under 30 minutes ({{ low_time|length }})</h2>
+  <table>
+    <thead><tr><th>Driver</th><th>Company</th><th>Drive</th><th>Shift</th><th>Break</th></tr></thead>
+    <tbody>
+      {% for r in low_time %}
+      <tr>
+        <td>{{ r.name }}</td><td>{{ r.company }}</td>
+        <td class="{{ 'text-red' if r.drive <= 0 else ('text-amber' if r.drive <= 30 else '') }}">{{ r.drive }}m</td>
+        <td class="{{ 'text-red' if r.shift <= 0 else ('text-amber' if r.shift <= 30 else '') }}">{{ r.shift }}m</td>
+        <td class="{{ 'text-red' if r.break <= 0 else ('text-amber' if r.break <= 30 else '') }}">{{ r.break }}m</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="text-muted">Nobody is under 30 minutes right now.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

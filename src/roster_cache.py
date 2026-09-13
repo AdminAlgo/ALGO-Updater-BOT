@@ -32,6 +32,11 @@ class RosterCache:
         self._lock = threading.Lock()
         self._candidates: list[Candidate] = []
         self._by_company: dict[str, list[Candidate]] = {}
+        # Full snapshots (HOS timers + connection state), for pages that need
+        # more than name/truck — Watchlists (§4.1) and Companies' counters
+        # (§4.3). Kept alongside _candidates rather than replacing it: existing
+        # callers (roster dropdown, /roster, title matching) only need Candidate.
+        self._snapshots_by_company: dict[str, list] = {}
         self._fetched_at: float = 0.0
         self._last_attempt: float = 0.0
         self._last_error: str | None = None
@@ -47,11 +52,13 @@ class RosterCache:
         with self._lock:
             self._by_company[company_name] = cands
             self._candidates = [c for cs in self._by_company.values() for c in cs]
+            self._snapshots_by_company[company_name] = list(snapshots)
             self._fetched_at = time.monotonic()
 
     def _refresh(self) -> None:
         config = self._config_loader()
         candidates: list[Candidate] = []
+        snapshots_by_company: dict[str, list] = {}
         errors: list[str] = []
         for company in config.companies:
             if not getattr(company, "enabled", True):
@@ -64,6 +71,7 @@ class RosterCache:
             except ELDError as exc:
                 errors.append(f"{company.name}: {exc}")
                 continue
+            snapshots_by_company[company.name] = list(result.snapshots)
             for snap in result.snapshots:
                 candidates.append(
                     Candidate(
@@ -79,6 +87,7 @@ class RosterCache:
             self._by_company = {}
             for c in candidates:
                 self._by_company.setdefault(c.company or "", []).append(c)
+            self._snapshots_by_company = snapshots_by_company
             self._fetched_at = time.monotonic()
         self._last_error = "; ".join(errors) or None
         if errors and not candidates:
@@ -98,6 +107,20 @@ class RosterCache:
                 self._last_attempt = now
                 self._refresh()
             return list(self._candidates)
+
+    def get_snapshot_records(self, force: bool = False) -> list[tuple[str, object]]:
+        """(company_name, DriverSnapshot) for every cached driver — Watchlists
+        (§4.1) and Companies' per-company counters (§4.3). Shares the same
+        staleness/refresh gate as get() so this never triggers an extra fetch
+        beyond what get() would already do."""
+        with self._lock:
+            now = time.monotonic()
+            stale = force or not self._snapshots_by_company or (now - self._fetched_at) >= self._ttl
+            if stale and (now - self._last_attempt) >= self._MIN_REFETCH_GAP:
+                self._last_attempt = now
+                self._refresh()
+            return [(company, snap) for company, snaps in self._snapshots_by_company.items()
+                    for snap in snaps]
 
     @property
     def last_error(self) -> str | None:

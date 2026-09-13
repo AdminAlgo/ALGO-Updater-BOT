@@ -44,6 +44,8 @@ DATA_DIR = os.environ.get("DATA_DIR", ".")
 STATE_FILE = os.path.join(DATA_DIR, "alert_state.json")
 REGISTRY_FILE = os.path.join(DATA_DIR, "driver_groups.json")
 ACTIVITY_LOG_FILE = os.path.join(DATA_DIR, "activity_log.json")
+SEND_LOG_FILE = os.path.join(DATA_DIR, "send_log.jsonl")
+MESSAGE_TEMPLATES_FILE = os.path.join(DATA_DIR, "message_templates.json")
 
 
 def _setup_logging() -> None:
@@ -262,7 +264,8 @@ def notify(config: Config, dry_run: bool) -> int:
     print(f"registered driver groups: {registry.count()}")
 
     stats = run_cycle(config, sender, state, registry=registry,
-                       activity_log=activity_log)
+                       activity_log=activity_log,
+                       send_log_path=None if dry_run else SEND_LOG_FILE)
     print(
         f"\nCycle complete — alerts: {stats.alerts}, sent: {stats.sent}, "
         f"failed: {stats.failed}, registered: {stats.registered}, "
@@ -410,10 +413,13 @@ def run_dashboard(config: Config) -> int:
     registry = GroupRegistry(REGISTRY_FILE)
     activity_log = ActivityLog(ACTIVITY_LOG_FILE)
     roster = RosterCache(load_config)
+    from src.templates_store import TemplateStore
+    template_store = TemplateStore(MESSAGE_TEMPLATES_FILE)
     runtime = RuntimeContext(
         config_path="config.yaml", env_path=".env",
         registry=registry, state=state, activity_log=activity_log,
-        roster_cache=roster,
+        roster_cache=roster, sender=sender, template_store=template_store,
+        send_log_path=SEND_LOG_FILE,
     )
 
     def _on_cycle(stats):
@@ -427,7 +433,7 @@ def run_dashboard(config: Config) -> int:
             config=config, sender=sender, state=state, registry=registry,
             activity_log=activity_log, roster_cache=roster,
             config_loader=load_config, on_cycle=_on_cycle,
-            stop_event=stop_event, discover=False,
+            stop_event=stop_event, discover=False, send_log_path=SEND_LOG_FILE,
         ),
         daemon=True, name="scheduler",
     )

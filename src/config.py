@@ -125,6 +125,9 @@ class Company:
     company_key_env: str | None = None
     # Resolved value of that variable (never written to config.yaml or logs).
     company_key: str | None = field(default=None, repr=False)
+    # Display/audit only — never validated against DOT's own database.
+    usdot: str | None = None
+    mc_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -389,6 +392,8 @@ def _parse_companies(raw_companies: Any, problems: list[str]) -> list[Company]:
                     drivers=drivers,
                     company_key_env=company_key_env,
                     company_key=company_key,
+                    usdot=(raw.get("usdot") or "").strip() or None,
+                    mc_number=(raw.get("mc_number") or "").strip() or None,
                 )
             )
 

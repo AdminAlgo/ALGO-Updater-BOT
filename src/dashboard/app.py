@@ -26,12 +26,18 @@ def create_app(runtime: RuntimeContext) -> Flask:
     from .views.companies import bp as companies_bp
     from .views.drivers import bp as drivers_bp
     from .views.health import bp as health_bp
+    from .views.stats import bp as stats_bp
     from .views.status import bp as status_bp
+    from .views.warnings import bp as warnings_bp
+    from .views.watchlists import bp as watchlists_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(status_bp)
+    app.register_blueprint(watchlists_bp)
     app.register_blueprint(companies_bp)
     app.register_blueprint(drivers_bp)
+    app.register_blueprint(warnings_bp)
+    app.register_blueprint(stats_bp)
     app.register_blueprint(health_bp)
 
     return app

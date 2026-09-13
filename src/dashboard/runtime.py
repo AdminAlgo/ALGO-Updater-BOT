@@ -18,6 +18,7 @@ from src.config import Config, load_config
 from src.registry import GroupRegistry
 from src.roster_cache import RosterCache
 from src.state import AlertState
+from src.templates_store import TemplateStore
 
 
 @dataclass
@@ -31,6 +32,10 @@ class RuntimeContext:
     lock: threading.RLock = field(default_factory=threading.RLock)
     last_cycle_stats: object | None = None
     last_cycle_at: datetime | None = None
+    # Warnings/broadcast composer (§4.5) + Statistics page (§4.6).
+    sender: object | None = None            # TelegramSender — reused for manual sends
+    template_store: TemplateStore | None = None
+    send_log_path: str | None = None
 
     def current_config(self) -> Config:
         return load_config(self.config_path, self.env_path)

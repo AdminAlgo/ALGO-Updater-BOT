@@ -45,3 +45,19 @@ def add_company(company: dict, config_path: str, env_path: str) -> None:
     data = load_raw(config_path)
     data.setdefault("companies", []).append(company)
     validate_and_write(data, config_path, env_path)
+
+
+def update_company(company_name: str, updates: dict, config_path: str, env_path: str) -> None:
+    """Patch a company's editable display fields (name, USDOT, MC#, closing line).
+
+    Does not touch provider/company_key_env/enabled — those have their own
+    dedicated flows (set_company_enabled, the add form, Railway/.env directly).
+    """
+    data = load_raw(config_path)
+    for company in data.get("companies", []):
+        if company.get("name") == company_name:
+            company.update({k: v for k, v in updates.items() if v is not None})
+            break
+    else:
+        raise ValueError(f"company not found: {company_name}")
+    validate_and_write(data, config_path, env_path)
