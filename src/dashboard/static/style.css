@@ -112,14 +112,22 @@ section {
 
 /* --- Tables --------------------------------------------------------------*/
 table {
-  border-collapse: collapse;
+  /* "separate" + explicit corner radii below, rather than collapse +
+     overflow:hidden: overflow:hidden clipped every row's ⋮ menu, which made the
+     menu unreachable on the last rows of a table. */
+  border-collapse: separate;
+  border-spacing: 0;
   width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
   margin: 1rem 0;
 }
+thead tr:first-child th:first-child { border-top-left-radius: 7px; }
+thead tr:first-child th:last-child { border-top-right-radius: 7px; }
+tbody tr:last-child td:first-child { border-bottom-left-radius: 7px; }
+tbody tr:last-child td:last-child { border-bottom-right-radius: 7px; }
+tbody tr:last-child td { border-bottom: none; }
 th, td { padding: .5rem .9rem; text-align: left; border-bottom: 1px solid var(--border); height: 37px; }
 th {
   background: var(--surface-hover); color: var(--text-muted);
@@ -163,6 +171,7 @@ tbody tr:last-child td { border-bottom: none; }
   min-width: 170px; z-index: 30; box-shadow: 0 10px 28px rgba(0, 0, 0, .45); overflow: hidden;
 }
 .kebab.open .menu { display: block; }
+.kebab.drop-up .menu { top: auto; bottom: calc(100% + 2px); }
 .kebab .menu button, .kebab .menu a {
   display: block; width: 100%; text-align: left; background: none; border: none;
   color: var(--text); padding: .55rem .9rem; font-size: .85rem; cursor: pointer; text-decoration: none;

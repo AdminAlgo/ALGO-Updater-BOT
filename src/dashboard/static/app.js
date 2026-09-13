@@ -9,7 +9,18 @@ document.addEventListener('click', function (e) {
     if (!kebabBtn || k !== kebabBtn.closest('.kebab')) k.classList.remove('open');
   });
   if (kebabBtn) {
-    kebabBtn.closest('.kebab').classList.toggle('open');
+    var kebab = kebabBtn.closest('.kebab');
+    kebab.classList.toggle('open');
+    // Rows near the bottom of the window would otherwise drop their menu below
+    // the fold, where it reads as a half-rendered menu rather than a scroll.
+    kebab.classList.remove('drop-up');
+    if (kebab.classList.contains('open')) {
+      var menu = kebab.querySelector('.menu');
+      if (menu && kebabBtn.getBoundingClientRect().bottom + menu.offsetHeight + 8
+                  > window.innerHeight) {
+        kebab.classList.add('drop-up');
+      }
+    }
     e.stopPropagation();
     return;
   }
