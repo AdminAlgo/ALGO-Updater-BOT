@@ -36,7 +36,9 @@ from src.config import Config, ConfigError, load_config, mask_chat_id, mask_secr
 from src.eld import ELDError, build_provider
 from src.rules import evaluate_company
 from src.registry import GroupRegistry
+from src.alert_texts import AlertTextStore
 from src.roster_cache import RosterCache
+from src.roster_seen import RosterSeen
 from src.scheduler import run_cycle, run_forever
 from src.state import AlertState
 from src.telegram_sender import TelegramSender
@@ -49,6 +51,8 @@ REGISTRY_FILE = os.path.join(DATA_DIR, "driver_groups.json")
 ACTIVITY_LOG_FILE = os.path.join(DATA_DIR, "activity_log.json")
 SEND_LOG_FILE = os.path.join(DATA_DIR, "send_log.jsonl")
 MESSAGE_TEMPLATES_FILE = os.path.join(DATA_DIR, "message_templates.json")
+ALERT_TEXTS_FILE = os.path.join(DATA_DIR, "alert_texts.json")
+ROSTER_SEEN_FILE = os.path.join(DATA_DIR, "roster_seen.json")
 
 # config.yaml normally comes from the repo, but the admin panel writes companies
 # back to it, so on Railway it has to sit on the volume too — CONFIG_PATH points
@@ -333,6 +337,7 @@ def run_service(config: Config, dry_run: bool) -> int:
     state = AlertState() if dry_run else AlertState(STATE_FILE)
     registry = GroupRegistry(REGISTRY_FILE)
     activity_log = ActivityLog(None if dry_run else ACTIVITY_LOG_FILE)
+    AlertTextStore(ALERT_TEXTS_FILE)  # installs any panel-edited alert wording
 
     # Live mode: a dedicated thread long-polls Telegram so commands/assignment
     # respond in ~1-2s; the scheduler then skips its own getUpdates step. The
@@ -502,14 +507,17 @@ def run_dashboard(config: Config) -> int:
     state = AlertState(STATE_FILE)
     registry = GroupRegistry(REGISTRY_FILE)
     activity_log = ActivityLog(ACTIVITY_LOG_FILE)
-    roster = RosterCache(load_config)
+    roster = RosterCache(load_config, seen=RosterSeen(ROSTER_SEEN_FILE))
     from src.templates_store import TemplateStore
+    seed_templates = not os.path.exists(MESSAGE_TEMPLATES_FILE)
     template_store = TemplateStore(MESSAGE_TEMPLATES_FILE)
+    if seed_templates:
+        template_store.seed_defaults()  # first boot only — deleting them later sticks
     runtime = RuntimeContext(
         config_path=CONFIG_FILE, env_path=".env",
         registry=registry, state=state, activity_log=activity_log,
         roster_cache=roster, sender=sender, template_store=template_store,
-        send_log_path=SEND_LOG_FILE,
+        send_log_path=SEND_LOG_FILE, alert_texts=AlertTextStore(ALERT_TEXTS_FILE),
     )
 
     def _on_cycle(stats):
