@@ -105,6 +105,23 @@ def _roster_search(query: str, candidates: list[Candidate]) -> list[Candidate]:
     return hits
 
 
+def _filter_by_company(query: str, hits: list[Candidate]) -> list[Candidate]:
+    """Narrow ambiguous /assign hits using a company name mentioned in the query.
+
+    Two drivers can share a name (and even a truck number) across different
+    companies — e.g. "Halimjon Pirnazarov" on both WWH and SUPREME CARRIER
+    SERVICES CORP. A dispatcher naturally types the company after the name
+    ("/assign Halimjon Pirnazarov | SUPREME CARRIER SERVICES CORP"); without
+    this, that text was silently ignored and the first alphabetical match won,
+    binding the group to the wrong company's driver. Only narrows when the
+    query names exactly one hit's company — otherwise the caller falls back to
+    showing the full disambiguation list.
+    """
+    q = normalize_name(query)
+    matches = [c for c in hits if c.company and normalize_name(c.company) in q]
+    return matches if len(matches) == 1 else []
+
+
 # --------------------------------------------------------------------------- #
 # Reports
 # --------------------------------------------------------------------------- #
@@ -525,14 +542,22 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
             say(f"No driver matching “{query}” on the roster. Try /roster {query}")
             return True
         if len(hits) != 1:
-            # Two drivers really can share a name, so the id goes on every line:
-            # when the names AND trucks read the same, it is the only thing that
-            # tells them apart, and without it there was no answer to give.
+            # A company mentioned in the query (e.g. after the group's own
+            # name, "/assign Halimjon Pirnazarov | SUPREME CARRIER SERVICES
+            # CORP") narrows a same-name collision without a human picking.
+            hits = _filter_by_company(query, hits) or hits
+        if len(hits) != 1:
+            # Two drivers really can share a name (even across companies), so
+            # the company and id both go on every line: when the names AND
+            # trucks read the same, those are the only things that tell them
+            # apart, and without them there was no answer to give.
             names = "\n".join(f"  • {c.name}"
                               + (f" (truck {c.truck})" if c.truck else "")
+                              + (f" — {c.company}" if c.company else "")
                               + f" · id {c.driver_id}"
-                              for c in sorted(hits, key=lambda c: c.name)[:10])
-            say(f"“{query}” matches {len(hits)} drivers — name one exactly:\n{names}\n"
+                              for c in sorted(hits, key=lambda c: (c.name, c.company or ""))[:10])
+            say(f"“{query}” matches {len(hits)} drivers — name one exactly, or add "
+                f"the company shown below to pick one:\n{names}\n"
                 f"Same name twice? Use the id:  /assign {hits[0].driver_id} | {chat_id}\n"
                 f"(for a co-driver group, /assign each name separately.)")
             return True
