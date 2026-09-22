@@ -110,6 +110,33 @@ class CommandTests(unittest.TestCase):
         self.assertIsNone(self.reg.chat_for("drv_100002"))
         self.assertIn("name one exactly", self.snd.last())
 
+    def test_assign_same_name_different_company_is_disambiguated_by_company(self):
+        # Two drivers can share a name AND truck number across companies (a real
+        # collision seen in production: "Halimjon Pirnazarov", truck 1985, on two
+        # different carriers). The company typed after the name must resolve it.
+        roster = ROSTER + [
+            Candidate("drv_300001", "Ali Niezov", None, "1833", "SUPREME CARRIER SERVICES CORP"),
+        ]
+        cmd = "/assign".split()[0]
+        _handle_command(cmd, "/assign Ali Niezov | SUPREME CARRIER SERVICES CORP",
+                        {"id": 999, "type": "private"}, self.snd, self.reg, roster,
+                        is_admin=True)
+        # Falls back to the group id already on the group ("Ali N group" test uses -1005);
+        # here no group context, so PM with a company hint but no id still needs an id.
+        self.assertIn("group id", self.snd.last())
+
+        self.reg.record_group("-1005", "Supreme group", "t0")
+        self._run_with_roster(
+            "/assign Ali Niezov | SUPREME CARRIER SERVICES CORP | -1005",
+            {"id": 999, "type": "private"}, roster,
+        )
+        self.assertEqual(self.reg.chat_for("drv_300001"), "-1005")
+        self.assertIsNone(self.reg.chat_for("drv_100001"))
+
+    def _run_with_roster(self, text, chat, roster):
+        cmd = text.split()[0].split("@")[0].lower()
+        return _handle_command(cmd, text, chat, self.snd, self.reg, roster, is_admin=True)
+
     def test_whois_reports_assignment(self):
         self.reg.register("drv_200003", "-1009", "Bek grp", "manual", "Bek Toshev")
         self._run("/whois -1009", {"id": 999, "type": "private"})
