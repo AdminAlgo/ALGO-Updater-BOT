@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from src import key_store
+from src.messages import KIND_LABELS, LANGUAGES
 
 try:
     import yaml
@@ -130,6 +131,13 @@ class Company:
     # Display/audit only — never validated against DOT's own database.
     usdot: str | None = None
     mc_number: str | None = None
+    # Alert kinds switched off for the WHOLE company (e.g. no disconnect
+    # updates). Combined with each driver's own switches — either one turns a
+    # kind off. Values are the keys of messages.KIND_LABELS.
+    disabled_kinds: list[str] = field(default_factory=list)
+    # Default alert language for this company's drivers ("en"/"ru"/"uz"/"es").
+    # A language set on the driver itself wins; None = English.
+    language: str | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +189,13 @@ class Config:
     # Telegram user IDs allowed to change group assignments via bot commands.
     # Empty preserves the original command behavior during initial setup.
     admin_user_ids: frozenset[int] = field(default_factory=frozenset)
+    # Vacation / home-time check-in: message a driver who has not worked
+    # (Off Duty / Sleeper / PC) for this many days. One message per value, each
+    # sent once per rest period. Empty list = off.
+    off_duty_checkin_days: list = field(default_factory=lambda: [2, 3])
+    # The dashboard's "low time" line (Watchlists, company counters): a driver
+    # is listed when any clock is at or below this many minutes.
+    watchlist_low_minutes: int = 30
 
     @property
     def driver_count(self) -> int:
@@ -383,6 +398,23 @@ def _parse_companies(raw_companies: Any, problems: list[str]) -> list[Company]:
                 )
                 drivers.append(Driver(name=dname.strip(), eld_driver_id=resolved_id))
 
+        raw_kinds = raw.get("disabled_kinds") or []
+        if not isinstance(raw_kinds, list) or not all(isinstance(k, str) for k in raw_kinds):
+            problems.append(f"{where}.disabled_kinds must be a list of alert kinds")
+            raw_kinds = []
+        unknown = [k for k in raw_kinds if k not in KIND_LABELS]
+        if unknown:
+            problems.append(
+                f"{where}.disabled_kinds has unknown kind(s) {unknown} — "
+                f"allowed: {', '.join(KIND_LABELS)}"
+            )
+        company_language = (raw.get("language") or "").strip().lower() or None
+        if company_language is not None and company_language not in LANGUAGES:
+            problems.append(
+                f"{where}.language must be one of {', '.join(LANGUAGES)}, got {company_language!r}"
+            )
+            company_language = None
+
         if (
             isinstance(name, str)
             and provider in VALID_PROVIDERS
@@ -400,8 +432,10 @@ def _parse_companies(raw_companies: Any, problems: list[str]) -> list[Company]:
                     drivers=drivers,
                     company_key_env=company_key_env,
                     company_key=company_key,
-                    usdot=(raw.get("usdot") or "").strip() or None,
-                    mc_number=(raw.get("mc_number") or "").strip() or None,
+                    usdot=(str(raw.get("usdot") or "")).strip() or None,
+                    mc_number=(str(raw.get("mc_number") or "")).strip() or None,
+                    disabled_kinds=[k for k in raw_kinds if k in KIND_LABELS],
+                    language=company_language,
                 )
             )
 
@@ -528,6 +562,19 @@ def load_config(
         problems.extend(_int_list_problems(raw_cycle_thr, "cycle_alert_thresholds_hours"))
         cycle_thr = raw_cycle_thr if isinstance(raw_cycle_thr, list) else [10, 5]
 
+    # Vacation check-in days. Missing => [2, 3]; present => positive ints.
+    raw_checkin = data.get("off_duty_checkin_days")
+    if raw_checkin is None:
+        checkin_days: list[int] = [2, 3]
+    else:
+        problems.extend(_int_list_problems(raw_checkin, "off_duty_checkin_days"))
+        checkin_days = sorted(set(raw_checkin)) if isinstance(raw_checkin, list) else [2, 3]
+
+    watch_low = data.get("watchlist_low_minutes", 30)
+    if not _is_int(watch_low) or watch_low <= 0:
+        problems.append("watchlist_low_minutes must be a positive integer")
+        watch_low = 30
+
     companies = _parse_companies(data.get("companies"), problems)
 
     # Provider (platform-wide) key — only required if an ENABLED company
@@ -579,4 +626,6 @@ def load_config(
         manual_driver_tags=(data.get("manual_driver_tags") or {}) if isinstance(
             data.get("manual_driver_tags") or {}, dict) else {},
         admin_user_ids=admin_user_ids,
+        off_duty_checkin_days=list(checkin_days),
+        watchlist_low_minutes=watch_low,
     )

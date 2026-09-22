@@ -1,44 +1,36 @@
+"""Companies — every carrier the bot polls, with live counters.
+
+Each row: USDOT, provider, how many drivers are low on time / disconnected /
+without a group / new, and the company's status. ▸ opens the company's drivers
+with their hours; ⋮ edits the company, its alert types and language, its API
+key, tests the connection, or switches the whole company on/off.
+"""
+
 from __future__ import annotations
 
 import os
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 
+from src.eld import ELDError, build_provider
+
 from ... import key_store
 from .. import config_writer
 from ..auth import login_required
+from ..rows import company_rows, summarize
+from ._common import ALERT_KINDS, LANGUAGES, group_options
 
 bp = Blueprint("companies", __name__, url_prefix="/companies")
 
 
-def _counters(runtime, config):
-    """Per-company low-time / disconnected counters (§4.3), from the same
-    RosterCache snapshot Watchlists uses — no extra live fetch."""
-    cache = getattr(runtime, "roster_cache", None)
-    records = cache.get_snapshot_records() if cache is not None else []
-    stale_min = getattr(config, "disconnect_stale_minutes", 30)
-    by_company: dict[str, dict] = {}
-    for company_name, snap in records:
-        c = by_company.setdefault(company_name, {"total": 0, "low_time": 0, "disconnected": 0})
-        c["total"] += 1
-        worst_min = min(snap.hos.drive_seconds, snap.hos.shift_seconds, snap.hos.break_seconds) // 60
-        if worst_min <= 30:
-            c["low_time"] += 1
-        if snap.connection.has_vehicle and (
-            snap.connection.is_offline or snap.connection.is_stale(stale_min)
-        ):
-            c["disconnected"] += 1
-    return by_company
-
-
-def _drivers_for_company(runtime, company_name: str):
-    """Registered driver rows for one company's expand-row (§4.3), matched via
-    the roster cache's driver_id -> company map."""
-    cache = getattr(runtime, "roster_cache", None)
-    driver_ids = {c.driver_id for c in (cache.get() if cache is not None else [])
-                 if c.company == company_name}
-    records = runtime.registry.all()
-    return [{"driver_id": did, **rec} for did, rec in records.items() if did in driver_ids]
+def _status(company) -> tuple[str, str]:
+    """(label, chip class). load_config auto-disables an enabled company whose
+    key is missing, so "no key" is told apart from a deliberate pause."""
+    if company.enabled:
+        return "Active", "chip-green"
+    if company.company_key_env and not company.company_key:
+        return "API key missing", "chip-red"
+    return "Turned off", "chip-muted"
 
 
 def _key_already_used(config, api_key: str, *, except_name: str | None = None):
@@ -60,14 +52,85 @@ def _key_already_used(config, api_key: str, *, except_name: str | None = None):
 def index():
     runtime = current_app.config["RUNTIME"]
     config = runtime.current_config()
-    counters = _counters(runtime, config)
-    expanded = {}
+    rows = company_rows(runtime, config)
+    by_company: dict[str, list] = {}
+    for r in rows:
+        by_company.setdefault(r["company"], []).append(r)
+    for company_rows_ in by_company.values():
+        company_rows_.sort(key=lambda r: (not r["low"], r["low_minutes"], r["name"].lower()))
+    companies = []
     for c in config.companies:
-        expanded[c.name] = _drivers_for_company(runtime, c.name)
+        label, chip = _status(c)
+        drivers = by_company.get(c.name, [])
+        companies.append({"c": c, "status": label, "chip": chip,
+                          "count": summarize(drivers), "drivers": drivers,
+                          "off_kinds": ",".join(c.disabled_kinds)})
+    totals = summarize(rows)
     return render_template(
-        "companies.html", companies=config.companies, counters=counters,
-        expanded=expanded,
+        "companies.html", companies=companies, totals=totals,
+        open_company=request.args.get("open", ""),
+        alert_kinds=ALERT_KINDS, languages=LANGUAGES,
+        groups=group_options(runtime.registry),
     )
+
+
+@bp.post("/<name>/alerts")
+@login_required
+def alerts(name):
+    """Company-wide alert types + default language."""
+    runtime = current_app.config["RUNTIME"]
+    enabled = set(request.form.getlist("kinds"))
+    disabled = [k for k, _ in ALERT_KINDS if k not in enabled]
+    language = request.form.get("language", "").strip() or None
+    if language not in (None, *(c for c, _ in LANGUAGES)):
+        language = None
+    apply_all = request.form.get("apply_all") == "1"
+    with runtime.lock:
+        try:
+            config_writer.set_company_fields(
+                name, {"disabled_kinds": disabled, "language": language},
+                runtime.config_path, runtime.env_path,
+            )
+        except Exception as exc:
+            flash(f"Could not update {name}: {exc}", "error")
+            return redirect(url_for("companies.index"))
+        changed = 0
+        if apply_all:
+            ids = [r["driver_id"] for r in company_rows(runtime, runtime.current_config())
+                   if r["company"] == name]
+            # None clears each driver's own choice, so they follow the company.
+            changed = runtime.registry.set_language_many(ids, None)
+            runtime.registry.save()
+    off = [label for code, label in ALERT_KINDS if code in disabled]
+    msg = f"Saved {name}: " + (f"{', '.join(off)} switched OFF for the whole company"
+                                if off else "every alert type is on")
+    msg += f"; language {dict(LANGUAGES).get(language, 'English') if language else 'English (default)'}"
+    if apply_all:
+        msg += f" — applied to {changed} driver(s) that had their own language"
+    flash(msg + ".", "ok")
+    return redirect(url_for("companies.index"))
+
+
+@bp.post("/<name>/test")
+@login_required
+def test_api(name):
+    """One live roster call with this company's keys — proves a new API key works."""
+    runtime = current_app.config["RUNTIME"]
+    config = runtime.current_config()
+    company = next((c for c in config.companies if c.name == name), None)
+    if company is None:
+        flash(f"Company not found: {name}", "error")
+    elif not company.company_key:
+        flash(f"{name} has no API key yet — set one with ⋮ → Change API key.", "error")
+    else:
+        try:
+            roster = build_provider(company, config.secrets).fetch_roster()
+        except ELDError as exc:
+            flash(f"{name}: API test FAILED — {exc}", "error")
+        else:
+            active = sum(1 for r in roster if r.get("active", True))
+            flash(f"{name}: API connection OK — {active} active driver(s) on the roster.", "ok")
+    return redirect(url_for("companies.index"))
 
 
 @bp.post("/<name>/toggle")
@@ -79,6 +142,11 @@ def toggle(name):
     if company is None:
         flash(f"Company not found: {name}", "error")
         return redirect(url_for("companies.index"))
+    if not company.enabled and not company.company_key:
+        # load_config would just switch it off again on the next read.
+        flash(f"{name} can't be turned on — it has no API key. Use ⋮ → Change API key first.",
+              "error")
+        return redirect(url_for("companies.index"))
     with runtime.lock:
         try:
             config_writer.set_company_enabled(
@@ -87,7 +155,8 @@ def toggle(name):
         except Exception as exc:
             flash(f"Could not update {name}: {exc}", "error")
         else:
-            flash(f"{name} is now {'disabled' if company.enabled else 'enabled'}.", "ok")
+            flash(f"{name} is now {'OFF — no polling, no updates' if company.enabled else 'ON'}.",
+                  "ok")
     return redirect(url_for("companies.index"))
 
 

@@ -1,41 +1,93 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m with context %}
 {% block title %}Watchlists — ALGO Updater{% endblock %}
+{% block body_attrs %}data-autorefresh="120"{% endblock %}
 {% block content %}
-<h1>Watchlists</h1>
+<div class="page-head">
+  <h1>Watchlists</h1>
+  <div class="head-actions text-muted">Live — refreshes every 2 minutes</div>
+</div>
 
-<section>
-  <h2>Disconnected now ({{ disconnected|length }})</h2>
+<nav class="jump">
+  <a href="#rolling" class="{{ 'text-red' if rolling }}">Rolling while disconnected <b>{{ rolling|length }}</b></a>
+  <a href="#disconnected">Disconnected <b>{{ disconnected|length }}</b></a>
+  <a href="#low">Under {{ low_min }} min <b>{{ low|length }}</b></a>
+  <a href="#resting">Off duty for days <b>{{ resting|length }}</b></a>
+</nav>
+
+<section id="rolling" class="{{ 'section-red' if rolling }}">
+  <div class="section-head">
+    <h2>Rolling while disconnected ({{ rolling|length }})</h2>
+    <a class="btn btn-sm btn-secondary" href="{{ url_for('watchlists.export', name='rolling') }}">CSV</a>
+  </div>
+  <p class="text-muted">Driving right now with the ELD offline — the logs are not recording. Call these first.</p>
+  {{ m.driver_table(rolling, empty='Nobody is driving disconnected right now.') }}
+</section>
+
+<section id="disconnected">
+  <div class="section-head">
+    <h2>Disconnected now ({{ disconnected|length }})</h2>
+    <div>
+      {% if include_all %}
+      <a class="btn btn-sm btn-secondary" href="{{ url_for('watchlists.index') }}#disconnected">Only on duty / driving</a>
+      {% else %}
+      <a class="btn btn-sm btn-secondary" href="{{ url_for('watchlists.index', all=1) }}#disconnected">Include off duty</a>
+      {% endif %}
+      <a class="btn btn-sm btn-secondary" href="{{ url_for('watchlists.export', name='disconnected', all=1 if include_all else None) }}">CSV</a>
+    </div>
+  </div>
+  <p class="text-muted">ELD offline, or no data for longer than the stale limit{% if not include_all %} — drivers who are on duty or driving{% endif %}.</p>
+  {{ m.driver_table(disconnected, empty='Nobody is disconnected right now.') }}
+</section>
+
+<section id="low">
+  <div class="section-head">
+    <h2>Under {{ low_min }} minutes on any clock ({{ low|length }})</h2>
+    <div class="seg">
+      {% for n in low_choices %}
+      <a class="seg-btn {{ 'active' if n == low_min }}" href="{{ url_for('watchlists.index', min=n, all=1 if include_all else None) }}#low">{{ n if n < 60 else (n // 60) ~ 'h' }}{{ ' min' if n < 60 }}</a>
+      {% endfor %}
+      <a class="btn btn-sm btn-secondary" href="{{ url_for('watchlists.export', name='low', min=low_min) }}">CSV</a>
+    </div>
+  </div>
+  <p class="text-muted">Drivers who need time to avoid a violation — lowest clock of Break, Drive, Shift or Cycle.
+    Drivers on duty / driving are listed first.</p>
+  {{ m.driver_table(low, empty='Nobody is that low right now.') }}
+</section>
+
+<section id="resting">
+  <div class="section-head">
+    <h2>Off duty for days ({{ resting|length }})</h2>
+    <a class="btn btn-sm btn-secondary" href="{{ url_for('watchlists.export', name='resting') }}">CSV</a>
+  </div>
+  <p class="text-muted">
+    {% if checkin_days %}A check-in message ("Just checking in — is everything okay?") goes out
+    after {{ checkin_days|join(' and ') }} day{{ 's' if checkin_days|length > 1 or checkin_days[0] != 1 }} off.
+    {% else %}Vacation check-ins are switched off (Settings).{% endif %}
+    Counting starts the first time the bot sees the driver resting.
+  </p>
+  <div class="table-wrap">
   <table>
-    <thead><tr><th>Driver</th><th>Company</th><th>Vehicle</th><th>Last seen</th><th>Duty status</th></tr></thead>
+    <thead><tr><th>Driver</th><th>Company</th><th>Status</th><th>Off for</th><th>Truck</th><th>Location</th><th>Group</th><th></th></tr></thead>
     <tbody>
-      {% for r in disconnected %}
+      {% for r in resting %}
       <tr>
-        <td>{{ r.name }}</td><td>{{ r.company }}</td><td>{{ r.vehicle }}</td>
-        <td>{{ r.last_seen }}</td><td>{{ r.duty_status }}</td>
+        <td><b>{{ r.name }}</b></td>
+        <td class="text-muted">{{ r.company }}</td>
+        <td><span class="duty duty-{{ r.status_short|lower }}">{{ r.status_short }}</span></td>
+        <td><b>{{ '%.1f'|format(r.rest_days) }}</b> days</td>
+        <td>{{ r.truck or '—' }}</td>
+        <td class="text-muted">{{ r.location or '—' }}</td>
+        <td>{% if r.linked %}<span class="text-green">{{ r.eld_title|truncate(30, True, '…') }}</span>{% else %}<span class="text-red">No group</span>{% endif %}</td>
+        <td class="menu-cell">{{ m.driver_menu(r) }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="text-muted">Nobody is disconnected right now.</td></tr>
+      <tr><td colspan="8" class="text-muted empty">Nobody has been off for a full day yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 
-<section>
-  <h2>Under 30 minutes ({{ low_time|length }})</h2>
-  <table>
-    <thead><tr><th>Driver</th><th>Company</th><th>Drive</th><th>Shift</th><th>Break</th></tr></thead>
-    <tbody>
-      {% for r in low_time %}
-      <tr>
-        <td>{{ r.name }}</td><td>{{ r.company }}</td>
-        <td class="{{ 'text-red' if r.drive <= 0 else ('text-amber' if r.drive <= 30 else '') }}">{{ r.drive }}m</td>
-        <td class="{{ 'text-red' if r.shift <= 0 else ('text-amber' if r.shift <= 30 else '') }}">{{ r.shift }}m</td>
-        <td class="{{ 'text-red' if r.break <= 0 else ('text-amber' if r.break <= 30 else '') }}">{{ r.break }}m</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="5" class="text-muted">Nobody is under 30 minutes right now.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
+{{ m.driver_modal(languages, alert_kinds, groups) }}
 {% endblock %}

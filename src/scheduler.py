@@ -187,6 +187,9 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
             "driver_id": alert.driver_id, "driver_name": alert.driver_name,
             "chat_id": str(alert.chat_id), "audience": alert.audience, "ok": res.ok,
             "suppressed": bool(getattr(res, "suppressed", False)),
+            # a 14h-violation reminder, not a new episode — Statistics counts
+            # violations once per episode
+            "resend": bool(getattr(alert, "is_resend", False)),
         })
 
     drain = queue.drain(on_result=_on_result)

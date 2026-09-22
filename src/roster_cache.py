@@ -24,10 +24,13 @@ log = logging.getLogger("eld_alert_bot")
 
 
 class RosterCache:
-    def __init__(self, config_loader, ttl_seconds: int = 600) -> None:
+    def __init__(self, config_loader, ttl_seconds: int = 600, seen=None) -> None:
         """`config_loader` is called on each self-refresh so dashboard edits to
-        config.yaml (new company, toggled enabled) are picked up."""
+        config.yaml (new company, toggled enabled) are picked up. `seen` is an
+        optional roster_seen.RosterSeen that records when each driver first
+        appears (the dashboard's red NEW label)."""
         self._config_loader = config_loader
+        self.seen = seen
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
         self._candidates: list[Candidate] = []
@@ -56,6 +59,8 @@ class RosterCache:
             self._snapshots_by_company[company_name] = list(snapshots)
             self._reindex_locked()
             self._fetched_at = time.monotonic()
+        if self.seen is not None:
+            self.seen.observe(company_name, snapshots)
 
     def _reindex_locked(self) -> None:
         """Rebuild the flat roster from the per-company lists, one row per
@@ -92,6 +97,8 @@ class RosterCache:
                 errors.append(f"{company.name}: {exc}")
                 continue
             snapshots_by_company[company.name] = list(result.snapshots)
+            if self.seen is not None:
+                self.seen.observe(company.name, result.snapshots)
             for snap in result.snapshots:
                 candidates.append(
                     Candidate(

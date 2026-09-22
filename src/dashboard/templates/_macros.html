@@ -1,0 +1,171 @@
+{#- Shared pieces: the ELD-style driver table, its ⋮ menu, and the one Edit
+    dialog every page reuses. Rows come from dashboard/rows.py:driver_row. -#}
+
+{% macro signal(r) -%}
+<span class="conn {{ 'conn-off' if r.disconnected else ('conn-on' if r.has_vehicle else 'conn-none') }}"
+      title="{{ 'ELD disconnected' if r.disconnected else ('Connected — ' ~ r.vehicle_status if r.has_vehicle else 'No vehicle paired') }}">
+  <svg viewBox="0 0 16 14" width="16" height="14" aria-hidden="true">
+    <rect x="1" y="9" width="3" height="4" rx=".6"/><rect x="6" y="5" width="3" height="8" rx=".6"/><rect x="11" y="1" width="3" height="12" rx=".6"/>
+  </svg>
+  <svg class="bt" viewBox="0 0 10 16" width="9" height="14" aria-hidden="true">
+    <path d="M1 4.5 8 11 4.5 14.5V1.5L8 5 1 11.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+  </svg>
+</span>
+{%- endmacro %}
+
+{% macro group_label(title, chat_id) -%}
+{%- if chat_id -%}{{ title ~ ' (' ~ chat_id ~ ')' if title and title != chat_id else chat_id }}{%- endif -%}
+{%- endmacro %}
+
+{% macro driver_menu(r) %}
+<div class="kebab">
+  <button type="button" class="kebab-btn" aria-label="Actions for {{ r.name }}">⋮</button>
+  <div class="menu">
+    <button type="button"
+            data-open-modal="driverModal"
+            data-id="{{ r.driver_id }}"
+            data-title="{{ r.name }}"
+            data-field-driver_name="{{ r.name }}"
+            data-field-chat_id="{{ group_label(r.eld_title, r.chat_id) }}"
+            data-field-dispatch_chat_id="{{ group_label(r.dispatch_title, r.dispatch_chat_id) }}"
+            data-field-language="{{ r.language_explicit }}"
+            data-field-updates_on="{{ '' if r.paused else '1' }}"
+            data-field-kinds="{{ r.kinds_csv }}">
+      {{ 'Edit groups & alerts' if r.linked else 'Assign group' }}
+    </button>
+    {% if r.linked %}
+    <form method="post" action="{{ url_for('drivers.pause', driver_id=r.driver_id) }}">
+      <input type="hidden" name="next" value="{{ request.full_path }}">
+      <input type="hidden" name="paused" value="{{ '0' if r.paused else '1' }}">
+      <button type="submit">{{ 'Turn updates ON' if r.paused else 'Turn updates OFF' }}</button>
+    </form>
+    <a href="{{ url_for('warnings.index', audience='driver', driver_id=r.driver_id) }}">Send a message</a>
+    <form method="post" action="{{ url_for('drivers.unregister', driver_id=r.driver_id) }}"
+          data-confirm="Unlink {{ r.name }}'s group? They will get no alerts until linked again.">
+      <input type="hidden" name="next" value="{{ request.full_path }}">
+      <button type="submit" class="danger">Unlink group</button>
+    </form>
+    {% endif %}
+    {% if r.blocked %}
+    <form method="post" action="{{ url_for('drivers.unblock', driver_id=r.driver_id) }}">
+      <input type="hidden" name="next" value="{{ request.full_path }}">
+      <button type="submit">Allow auto-linking again</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}
+
+{% macro updates_chip(r) -%}
+{%- if not r.linked -%}<span class="chip chip-red">No group</span>
+{%- elif r.paused -%}<span class="chip chip-muted">OFF</span>
+{%- elif r.kinds_on < r.kinds_total -%}<span class="chip chip-amber" title="{{ r.kinds_on }} of {{ r.kinds_total }} alert types on">ON {{ r.kinds_on }}/{{ r.kinds_total }}</span>
+{%- else -%}<span class="chip chip-green">ON</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro driver_table(rows, show_company=True, empty='No drivers.', table_id='') %}
+<div class="table-wrap">
+<table class="eld-table" {% if table_id %}id="{{ table_id }}"{% endif %}>
+  <thead>
+    <tr>
+      <th class="idx">#</th><th>Status</th><th>Driver</th><th>Vehicle</th><th>Location</th>
+      <th>Break</th><th>Drive</th><th>Shift</th><th>Cycle</th><th>Updates</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr class="{{ 'row-new' if r.is_new and not r.linked }} {{ 'row-rolling' if r.rolling }}"
+        data-search="{{ (r.name ~ ' ' ~ r.truck ~ ' ' ~ r.company ~ ' ' ~ r.eld_title ~ ' ' ~ (r.username or ''))|lower }}">
+      <td class="idx">{{ loop.index }}</td>
+      <td><span class="duty duty-{{ r.status_short|lower }}" title="{{ r.status_label }}">{{ r.status_short }}</span></td>
+      <td class="who">
+        <div class="who-name">{{ r.name }}{% if r.is_new and not r.linked %}<span class="tag-new">NEW</span>{% endif %}</div>
+        <div class="who-sub">
+          {%- if not r.linked -%}<span class="text-red">No group — not getting updates</span>
+          {%- elif r.paused -%}<span class="text-amber">Updates turned off</span>
+          {%- else -%}<span class="text-green" title="ELD group">{{ r.eld_title|truncate(38, True, '…') }}</span>{%- endif -%}
+          {%- if r.dispatch_chat_id %}<span class="text-muted" title="Dispatch group: {{ r.dispatch_title }}"> +Dsp</span>{% endif -%}
+          {%- if show_company %}<span class="text-muted"> · {{ r.company }}</span>{% endif -%}
+        </div>
+      </td>
+      <td class="veh">
+        {{ signal(r) }} <b>{{ r.truck or '—' }}</b>
+        {% if r.rolling %}<div><span class="chip chip-red chip-xs">ROLLING · DISCONNECTED</span></div>
+        {% elif r.disconnected %}<div><span class="chip chip-red chip-xs">DISCONNECTED</span></div>{% endif %}
+      </td>
+      <td class="loc">
+        <div class="loc-main" title="{{ r.location }}">{{ r.location or '—' }}</div>
+        <div class="loc-sub">{{ r.last_seen }}{% if r.speed %} · {{ r.speed }} mph{% endif %}</div>
+      </td>
+      {% for t in r.timers %}
+      <td class="clock clock-{{ t.key }} {{ 'is-low' if t.low }} {{ 'is-zero' if t.zero }}">
+        <div class="clock-val">{{ t.text }}</div>
+        <div class="bar"><i style="width:{{ t.pct }}%"></i></div>
+      </td>
+      {% endfor %}
+      <td>{{ updates_chip(r) }}</td>
+      <td class="menu-cell">{{ driver_menu(r) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="11" class="text-muted empty">{{ empty }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}
+
+{% macro driver_modal(languages, alert_kinds, groups) %}
+<datalist id="knownGroups">
+  {% for g in groups %}<option value="{{ group_label(g.title, g.chat_id) }}"></option>{% endfor %}
+</datalist>
+<div class="modal-overlay" id="driverModalOverlay">
+  <div class="modal" id="driverModal">
+    <h2>Driver: <span data-modal-title></span></h2>
+    <form method="post" data-action-template="{{ url_for('drivers.edit', driver_id='__ID__') }}">
+      <input type="hidden" name="driver_name">
+      <input type="hidden" name="next" value="{{ request.full_path }}">
+      <div class="field">
+        <label>ELD group <span class="text-muted">— type the group name</span>
+          <input type="text" name="chat_id" list="knownGroups" autocomplete="off" required
+                 placeholder="Start typing the Telegram group name…">
+        </label>
+      </div>
+      <div class="field">
+        <label>Dispatch group <span class="text-muted">(optional — gets the same updates)</span>
+          <input type="text" name="dispatch_chat_id" list="knownGroups" autocomplete="off"
+                 placeholder="Leave empty for none">
+        </label>
+        <p class="hint">A group appears in the list once the bot has been added to it and
+          someone has written there. You can also paste a chat id like -1001234567890.</p>
+      </div>
+      <div class="field">
+        <label>Message language
+          <select name="language">
+            <option value="">Company default</option>
+            {% for code, label in languages %}
+            <option value="{{ code }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="field">
+        <label class="switch-row"><input type="checkbox" name="updates_on" value="1"> Updates ON for this driver</label>
+      </div>
+      <div class="field">
+        <label>Alert types this driver gets</label>
+        <div class="checks">
+          {% for code, label in alert_kinds %}
+          <label><input type="checkbox" name="kinds" value="{{ code }}"> {{ label }}</label>
+          {% endfor %}
+        </div>
+        <p class="hint">A type switched off for the whole company (Companies → ⋮ → Alert types)
+          stays off even if ticked here.</p>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endmacro %}

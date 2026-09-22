@@ -89,6 +89,11 @@ KIND_CYCLE = "cycle"
 KIND_SHIFT_VIOLATION = "shift_violation"
 KIND_DISCONNECT = "disconnect"
 KIND_ON_DUTY = "on_duty"
+KIND_OFF_DUTY_CHECKIN = "off_duty_checkin"
+
+#: every driver-facing alert kind — what "pause this driver" switches off.
+ALL_KINDS = (KIND_LOW_HOURS, KIND_CYCLE, KIND_SHIFT_VIOLATION, KIND_DISCONNECT,
+             KIND_ON_DUTY, KIND_OFF_DUTY_CHECKIN)
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,8 @@ class Alert:
     # Shift-violation only: True if this is a resend, not the episode's first
     # message — tells commit() whether to count it against the resend cap.
     is_resend: bool = False
+    # Off-duty check-in only: every day-threshold this one message settles.
+    covers: tuple[int, ...] = field(default_factory=tuple)
 
     def commit(self, state, now) -> None:
         """Record in state that this alert was successfully sent (de-dup)."""
@@ -135,6 +142,11 @@ class Alert:
             state.mark_disconnect_alert(self.driver_id, now)
         elif self.kind == KIND_ON_DUTY:
             state.set_on_duty_alerted(self.driver_id, True)
+        elif self.kind == KIND_OFF_DUTY_CHECKIN:
+            # Every threshold at or below the one that fired counts as done, so
+            # a driver first seen resting 3+ days gets ONE check-in, not two.
+            for days in self.covers or (self.threshold,):
+                state.mark_off_duty_checkin(self.driver_id, days)
 
 
 # --------------------------------------------------------------------------- #
@@ -158,16 +170,23 @@ def evaluate_driver(
     """
     alerts: list[Alert] = []
     did = snap.driver_id
+    company_language = getattr(company, "language", None)
+    # A kind is off if the company OR the driver switched it off; pausing a
+    # driver switches off everything. Resets below still run for disabled
+    # kinds, so turning one back on never replays a stale backlog.
+    disabled = set(getattr(company, "disabled_kinds", None) or ())
     if registry is not None:
         driver_chat = registry.chat_for(did)  # None => not registered yet
         dispatch_chat = registry.dispatch_chat_for(did)
-        language = registry.language_for(did)
-        disabled = set(registry.disabled_kinds_for(did))
+        language = (registry.explicit_language(did) or company_language
+                    or messages.DEFAULT_LANGUAGE)
+        disabled |= set(registry.disabled_kinds_for(did))
+        if registry.is_paused(did):
+            disabled |= set(ALL_KINDS)
     else:
         driver_chat = company.driver_group_chat_id
         dispatch_chat = None
-        language = messages.DEFAULT_LANGUAGE
-        disabled = set()
+        language = company_language or messages.DEFAULT_LANGUAGE
     team_chat = getattr(company, "team_group_chat_id", None) or config.team_group_chat_id
     log_url = messages.render_log_url(getattr(config, "driver_log_url_template", None), snap)
     tag, mention_uid = _resolve_mention(snap, config, registry)  # @handle or user-id
@@ -180,6 +199,15 @@ def evaluate_driver(
     # connection_required status (Driving / On Duty / Yard Move) — never while
     # Off Duty or in the Sleeper berth.
     active = snap.duty_status_label in set(config.connection_required_statuses)
+
+    # --- Rule 6: off-duty check-in ("vacation" message) ------------------ #
+    # Runs before the no-active-shift guard below: that guard is about HOS
+    # timers, and a driver home for days is exactly who it would hide.
+    alerts.extend(_off_duty_checkin(
+        snap, active=active, company=company, config=config, state=state,
+        now=now, driver_chat=driver_chat, disabled=disabled, language=language,
+        tag=tag, log_url=log_url, extras=_extras(DRIVER_GROUP),
+    ))
 
     # --- Guard: "no active shift" data artifact --------------------------- #
     # When a driver has just come On Duty (or the ELD has no active shift yet),
@@ -199,7 +227,7 @@ def evaluate_driver(
         state.reset_cycle(did)
         state.clear_shift_violation(did)
         state.clear_disconnect(did)
-        return []
+        return _finish(alerts, snap, config, mention_uid)
 
     # --- Rule 1: low hours ------------------------------------------------- #
     # Trigger value is the most urgent of the three monitored timers (minutes).
@@ -406,13 +434,66 @@ def evaluate_driver(
         # Not On Duty, or the kind is disabled — reset the episode.
         state.clear_on_duty(did)
 
+    return _finish(alerts, snap, config, mention_uid)
+
+
+def _finish(alerts: list, snap: DriverSnapshot, config, mention_uid) -> list:
     # No @username but we have a user-id -> attach a user-id mention so the
     # sender prepends the name + a text_mention entity (pings them anyway).
     if mention_uid:
         alerts = [replace(a, mention_user_id=mention_uid, mention_name=snap.name)
                   for a in alerts]
-
     return _attach_log_image(alerts, snap, config)
+
+
+# Duty statuses that count as "working" can't be read off the snapshot alone
+# (config decides), so the caller passes ``active``. Anything else with a known
+# status — Off Duty, Sleeper, Personal Conveyance — is resting.
+def _off_duty_checkin(snap: DriverSnapshot, *, active: bool, company, config, state,
+                      now: datetime, driver_chat, disabled: set, language: str,
+                      tag, log_url, extras) -> list[Alert]:
+    did = snap.driver_id
+    thresholds = sorted(set(getattr(config, "off_duty_checkin_days", None) or []))
+    if active:
+        state.clear_rest(did)  # back at work — the next rest period starts fresh
+        return []
+    if snap.duty_status_code is None:
+        return []  # no status row at all: unknown, not "resting"
+
+    since_iso = state.rest_since(did)
+    if not since_iso:
+        state.set_rest_since(did, now.isoformat())
+        return []
+    if not thresholds or KIND_OFF_DUTY_CHECKIN in disabled or not driver_chat:
+        return []
+
+    try:
+        since = datetime.fromisoformat(since_iso)
+    except ValueError:
+        state.set_rest_since(did, now.isoformat())
+        return []
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    rested_days = (now - since).total_seconds() / 86400
+
+    fired = set(state.off_duty_checkin_fired(did))
+    crossed = [d for d in thresholds if rested_days >= d]
+    if not crossed or max(crossed) in fired:
+        return []
+    days = max(crossed)  # the latest milestone reached — one message, not a burst
+    return [Alert(
+        kind=KIND_OFF_DUTY_CHECKIN,
+        audience=DRIVER_GROUP,
+        chat_id=driver_chat,
+        company=company.name,
+        driver_name=snap.name,
+        driver_id=did,
+        text=messages.off_duty_checkin_text(snap, days, tag, log_url, language),
+        dedupe_key=f"{did}:off_duty:{days}",
+        threshold=days,
+        covers=tuple(crossed),
+        extra_chat_ids=extras,
+    )]
 
 
 def evaluate_company(snapshots: list[DriverSnapshot], *, company, config, state, now,

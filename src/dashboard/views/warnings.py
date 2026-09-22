@@ -1,9 +1,10 @@
-"""Warnings / Broadcast composer (upgrade spec §4.5).
+"""Warnings — send a message (e.g. "inspection week") to every driver, one
+company, or one driver, in each driver's own language; manage the message
+templates; and edit the wording of the automatic alerts.
 
-Sending reuses the existing sender_queue.py / telegram_sender.py path (same
-rate limits as the alert engine) — this is a new manual TRIGGER, not a new
-delivery mechanism. Every send is written to send_log.jsonl with
-kind "broadcast:<template_id>" so it shows up in Statistics (§4.6) too.
+Sending reuses the same SendQueue / TelegramSender path as the alert engine
+(same rate limits, SAFE_MODE applies). Every send is logged to send_log.jsonl
+as kind "broadcast:<template name>" so it shows up in Statistics.
 """
 
 from __future__ import annotations
@@ -12,52 +13,160 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 
-from ..auth import login_required
-from ... import send_log
+from ... import messages, send_log
 from ...activity_log import ActivityEntry
 from ...rules import DRIVER_GROUP, Alert
 from ...sender_queue import SendQueue
+from ...templates_store import PLACEHOLDERS
+from ..auth import login_required
+from ..rows import company_rows
+from ._common import LANGUAGES
 
 bp = Blueprint("warnings", __name__, url_prefix="/warnings")
 
-# (code, label) pairs for the template editor's per-language fields — distinct
-# from templates_store.LANGUAGES, which is just the flat list of valid codes.
-LANGUAGES = [("en", "English"), ("ru", "Russian"), ("uz", "Uzbek"), ("es", "Spanish")]
+
+def _choice():
+    src = request.form if request.method == "POST" else request.args
+    return {
+        "audience": src.get("audience", "all"),
+        "company": src.get("company", "").strip(),
+        "driver_id": src.get("driver_id", "").strip(),
+        "template_id": src.get("template_id", "").strip(),
+        "dispatch": src.get("dispatch") == "1",
+    }
 
 
-def _targets(runtime, audience: str, company: str, driver_id: str):
-    """Resolve an audience choice to a list of (driver_id, name, chat_id, language)."""
-    records = runtime.registry.all()
-    cache = getattr(runtime, "roster_cache", None)
-    company_of = {c.driver_id: c.company for c in (cache.get() if cache is not None else [])}
+def _targets(runtime, config, choice) -> tuple[list[dict], int]:
+    """Live-roster drivers the choice reaches: linked, updates on. Returns
+    (rows, how many matched but were skipped for no group / updates off)."""
+    rows = company_rows(runtime, config)
+    if choice["audience"] == "driver":
+        rows = [r for r in rows if r["driver_id"] == choice["driver_id"]]
+    elif choice["audience"] == "company":
+        rows = [r for r in rows if r["company"] == choice["company"]]
+    reachable = [r for r in rows if r["linked"] and not r["paused"]]
+    return reachable, len(rows) - len(reachable)
 
-    def _row(did, rec):
-        return (did, rec.get("driver_name") or did, rec.get("chat_id"),
-               rec.get("language") or "en")
 
-    if audience == "driver":
-        rec = records.get(driver_id)
-        return [_row(driver_id, rec)] if rec and rec.get("chat_id") else []
-    if audience == "company":
-        return [_row(did, rec) for did, rec in records.items()
-                if rec.get("chat_id") and company_of.get(did) == company]
-    # "all"
-    return [_row(did, rec) for did, rec in records.items() if rec.get("chat_id")]
+def _page(runtime, config, choice, preview=None):
+    store = runtime.template_store
+    rows = company_rows(runtime, config)
+    texts = getattr(runtime, "alert_texts", None)
+    custom = texts.all() if texts is not None else {}
+    alert_texts = [{
+        "kind": kind, "label": label,
+        "placeholders": messages.PLACEHOLDERS[kind],
+        "custom": sorted(custom.get(kind, {})),
+        "texts": {lang: messages.template_for(kind, lang) for lang in messages.LANGUAGES},
+    } for kind, label in messages.KIND_LABELS.items()]
+    return render_template(
+        "warnings.html",
+        templates=store.all() if store else [],
+        companies=[c.name for c in config.companies if c.enabled],
+        drivers=sorted((r for r in rows if r["linked"]), key=lambda r: r["name"].lower()),
+        languages=LANGUAGES, choice=choice, preview=preview,
+        placeholders=PLACEHOLDERS, alert_texts=alert_texts,
+        open_kind=request.args.get("kind", ""),
+    )
 
 
 @bp.get("")
 @login_required
 def index():
     runtime = current_app.config["RUNTIME"]
+    return _page(runtime, runtime.current_config(), _choice())
+
+
+@bp.post("/preview")
+@login_required
+def preview():
+    runtime = current_app.config["RUNTIME"]
+    config = runtime.current_config()
+    choice = _choice()
+    store = runtime.template_store
+    template = store.get(choice["template_id"]) if store else None
+    if not template:
+        flash("Choose a message template first.", "error")
+        return redirect(url_for("warnings.index"))
+    targets, skipped = _targets(runtime, config, choice)
+    by_lang: dict[str, list] = {}
+    for r in targets:
+        by_lang.setdefault(r["language"], []).append(r)
+    samples = [{
+        "code": code, "label": label, "count": len(by_lang.get(code, [])),
+        "text": store.render(template, code, _values(by_lang[code][0]) if by_lang.get(code)
+                             else {"name": "John Smith", "company": "", "truck": ""}),
+    } for code, label in LANGUAGES if by_lang.get(code)]
+    return _page(runtime, config, choice, preview={
+        "template": template, "count": len(targets), "skipped": skipped,
+        "dispatch": sum(1 for r in targets if r["dispatch_chat_id"]) if choice["dispatch"] else 0,
+        "samples": samples, "names": [r["name"] for r in targets[:12]],
+    })
+
+
+def _values(row: dict) -> dict:
+    return {"name": row["name"], "company": row["company"], "truck": row["truck"]}
+
+
+@bp.post("/send")
+@login_required
+def send():
+    runtime = current_app.config["RUNTIME"]
     config = runtime.current_config()
     store = runtime.template_store
-    return render_template(
-        "warnings.html",
-        templates=store.all() if store else [],
-        companies=[c.name for c in config.companies],
-        drivers=sorted(runtime.registry.all().items(), key=lambda kv: kv[1].get("driver_name", "")),
-        languages=LANGUAGES,
+    sender = runtime.sender
+    choice = _choice()
+    template = store.get(choice["template_id"]) if store else None
+    if sender is None or template is None:
+        flash("Nothing sent — no Telegram sender or no template.", "error")
+        return redirect(url_for("warnings.index"))
+    targets, _ = _targets(runtime, config, choice)
+    if not targets:
+        flash("No driver with a linked group matched — nothing sent.", "error")
+        return redirect(url_for("warnings.index"))
+
+    queue = SendQueue(
+        sender,
+        global_per_second=getattr(config, "send_rate_per_second", 25),
+        per_chat_per_minute=getattr(config, "send_rate_per_chat_per_minute", 20),
     )
+    kind = f"broadcast:{template.get('name') or template.get('id')}"
+    now = datetime.now(timezone.utc)
+    for r in targets:
+        extras = (r["dispatch_chat_id"],) if choice["dispatch"] and r["dispatch_chat_id"] else ()
+        queue.push(Alert(
+            kind=kind, audience=DRIVER_GROUP, chat_id=r["chat_id"], company=r["company"],
+            driver_name=r["name"], driver_id=r["driver_id"],
+            text=store.render(template, r["language"], _values(r)),
+            extra_chat_ids=extras,
+        ))
+
+    counts = {"sent": 0, "withheld": 0, "failed": 0}
+
+    def _on_result(alert, res):
+        suppressed = bool(getattr(res, "suppressed", False))
+        counts["sent" if res.ok else ("withheld" if suppressed else "failed")] += 1
+        runtime.activity_log.record(ActivityEntry(
+            ts=now.isoformat(), kind=alert.kind, company=alert.company,
+            driver_name=alert.driver_name, chat_id=str(alert.chat_id),
+            audience=alert.audience, ok=res.ok, error=res.error,
+        ))
+        send_log.append(runtime.send_log_path, {
+            "ts": now.isoformat(), "kind": alert.kind, "company": alert.company,
+            "driver_id": alert.driver_id, "driver_name": alert.driver_name,
+            "chat_id": str(alert.chat_id), "audience": alert.audience, "ok": res.ok,
+            "suppressed": suppressed,
+        })
+
+    queue.drain(on_result=_on_result)
+    runtime.activity_log.save()
+    msg = f"“{template.get('name')}” sent to {counts['sent']} driver(s)"
+    if counts["withheld"]:
+        msg += f", {counts['withheld']} withheld by SAFE_MODE (test platform)"
+    if counts["failed"]:
+        msg += f", {counts['failed']} FAILED (see Overview → Recent activity)"
+    flash(msg + ".", "error" if counts["failed"] else "ok")
+    return redirect(url_for("warnings.index"))
 
 
 @bp.post("/templates")
@@ -70,16 +179,17 @@ def save_template():
         return redirect(url_for("warnings.index"))
     name = request.form.get("name", "").strip()
     template_id = request.form.get("template_id", "").strip()
-    text = {code: request.form.get(f"text_{code}", "") for code, _ in LANGUAGES}
+    text = {code: request.form.get(f"text_{code}", "").replace("\r\n", "\n")
+            for code, _ in LANGUAGES}
     if not name or not text.get("en", "").strip():
-        flash("A name and at least English text are required.", "error")
+        flash("A name and the English text are required.", "error")
         return redirect(url_for("warnings.index"))
     if template_id and store.get(template_id):
         store.update(template_id, name=name, text=text)
-        flash(f"Updated template “{name}”.", "ok")
+        flash(f"Updated “{name}”.", "ok")
     else:
         store.add(name, text)
-        flash(f"Saved template “{name}”.", "ok")
+        flash(f"Saved new message type “{name}”.", "ok")
     return redirect(url_for("warnings.index"))
 
 
@@ -95,65 +205,22 @@ def delete_template(template_id):
     return redirect(url_for("warnings.index"))
 
 
-@bp.post("/send")
+@bp.post("/alert-texts/<kind>")
 @login_required
-def send():
+def save_alert_text(kind):
     runtime = current_app.config["RUNTIME"]
-    store = runtime.template_store
-    sender = runtime.sender
-    if sender is None:
-        flash("No Telegram sender is configured for this dashboard.", "error")
+    store = getattr(runtime, "alert_texts", None)
+    if store is None:
+        flash("Alert text store is not configured.", "error")
         return redirect(url_for("warnings.index"))
-
-    audience = request.form.get("audience", "all")
-    company = request.form.get("company", "").strip()
-    driver_id = request.form.get("driver_id", "").strip()
-    template_id = request.form.get("template_id", "").strip()
-    template = store.get(template_id) if store else None
-    if not template:
-        flash("Choose a saved template to send.", "error")
-        return redirect(url_for("warnings.index"))
-
-    targets = _targets(runtime, audience, company, driver_id)
-    if not targets:
-        flash("No drivers matched that audience.", "error")
-        return redirect(url_for("warnings.index"))
-
-    config = runtime.current_config()
-    queue = SendQueue(
-        sender,
-        global_per_second=getattr(config, "send_rate_per_second", 25),
-        per_chat_per_minute=getattr(config, "send_rate_per_chat_per_minute", 20),
-    )
-    kind = f"broadcast:{template.get('name') or template_id}"
-    now = datetime.now(timezone.utc)
-    for did, name, chat_id, language in targets:
-        queue.push(Alert(
-            kind=kind, audience=DRIVER_GROUP, chat_id=chat_id, company="",
-            driver_name=name, driver_id=did,
-            text=store.render(template, language),
-        ))
-
-    sent = failed = 0
-
-    def _on_result(alert, res):
-        nonlocal sent, failed
-        if res.ok:
-            sent += 1
-        else:
-            failed += 1
-        runtime.activity_log.record(ActivityEntry(
-            ts=now.isoformat(), kind=alert.kind, company=alert.company,
-            driver_name=alert.driver_name, chat_id=str(alert.chat_id),
-            audience=alert.audience, ok=res.ok, error=res.error,
-        ))
-        send_log.append(runtime.send_log_path, {
-            "ts": now.isoformat(), "kind": alert.kind, "company": alert.company,
-            "driver_id": alert.driver_id, "driver_name": alert.driver_name,
-            "chat_id": str(alert.chat_id), "audience": alert.audience, "ok": res.ok,
-        })
-
-    queue.drain(on_result=_on_result)
-    runtime.activity_log.save()
-    flash(f"Broadcast sent: {sent} delivered, {failed} failed.", "ok" if not failed else "error")
-    return redirect(url_for("warnings.index"))
+    if request.form.get("reset") == "1":
+        store.reset_kind(kind)
+        flash(f"{messages.KIND_LABELS.get(kind, kind)}: back to the built-in wording.", "ok")
+        return redirect(url_for("warnings.index", kind=kind) + "#alert-texts")
+    problems = store.save_kind(kind, {code: request.form.get(f"text_{code}", "")
+                                      for code in messages.LANGUAGES})
+    if problems:
+        flash("Not saved — " + "; ".join(problems), "error")
+    else:
+        flash(f"{messages.KIND_LABELS.get(kind, kind)}: saved. Used from the next alert on.", "ok")
+    return redirect(url_for("warnings.index", kind=kind) + "#alert-texts")

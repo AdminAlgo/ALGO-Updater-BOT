@@ -36,6 +36,7 @@ class RuntimeContext:
     sender: object | None = None            # TelegramSender — reused for manual sends
     template_store: TemplateStore | None = None
     send_log_path: str | None = None
+    alert_texts: object | None = None       # AlertTextStore — Warnings → Alert texts
 
     def current_config(self) -> Config:
         return load_config(self.config_path, self.env_path)

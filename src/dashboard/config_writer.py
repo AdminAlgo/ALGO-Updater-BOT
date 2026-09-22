@@ -61,3 +61,31 @@ def update_company(company_name: str, updates: dict, config_path: str, env_path:
     else:
         raise ValueError(f"company not found: {company_name}")
     validate_and_write(data, config_path, env_path)
+
+
+def set_company_fields(company_name: str, fields: dict, config_path: str, env_path: str) -> None:
+    """Set company keys; a value of None or [] REMOVES the key (so clearing a
+    language or re-enabling every alert type leaves config.yaml tidy)."""
+    data = load_raw(config_path)
+    for company in data.get("companies", []):
+        if company.get("name") == company_name:
+            for key, value in fields.items():
+                if value is None or value == []:
+                    company.pop(key, None)
+                else:
+                    company[key] = value
+            break
+    else:
+        raise ValueError(f"company not found: {company_name}")
+    validate_and_write(data, config_path, env_path)
+
+
+def set_settings(fields: dict, config_path: str, env_path: str) -> None:
+    """Patch top-level settings (the Settings page). Validated like every write."""
+    data = load_raw(config_path)
+    for key, value in fields.items():
+        if key == "low_hours_thresholds_minutes.driver_group":
+            data.setdefault("low_hours_thresholds_minutes", {})["driver_group"] = value
+        else:
+            data[key] = value
+    validate_and_write(data, config_path, env_path)

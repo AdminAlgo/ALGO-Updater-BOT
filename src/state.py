@@ -35,6 +35,8 @@ def _empty_record() -> dict[str, Any]:
         "last_disconnect_iso": None,
         "on_duty_since": None,        # when the current On-Duty episode began
         "on_duty_alerted": False,     # welfare check already sent this episode
+        "rest_since": None,           # when the driver last stopped working
+        "off_duty_checkin_fired": [],  # day-thresholds already checked in on
     }
 
 
@@ -175,3 +177,42 @@ class AlertState:
         rec = self._rec(driver_id)
         rec["on_duty_since"] = None
         rec["on_duty_alerted"] = False
+
+    # ------------------------------------------------------------------ #
+    # Off-duty check-in ("vacation" message after N days off)
+    # ------------------------------------------------------------------ #
+    # rest_since is the first poll the driver was seen NOT working (Off Duty,
+    # Sleeper, PC). The API has no "status since" time, so the clock starts the
+    # first time this bot sees them resting — after a fresh state file the
+    # first check-in is therefore N days after that, never a burst at boot.
+    def rest_since(self, driver_id: str) -> str | None:
+        return self._rec(driver_id).get("rest_since")
+
+    def set_rest_since(self, driver_id: str, iso: str) -> None:
+        self._rec(driver_id)["rest_since"] = iso
+
+    def off_duty_checkin_fired(self, driver_id: str) -> list[int]:
+        return list(self._rec(driver_id).get("off_duty_checkin_fired") or [])
+
+    def mark_off_duty_checkin(self, driver_id: str, days: int) -> None:
+        fired = self._rec(driver_id).setdefault("off_duty_checkin_fired", [])
+        if days not in fired:
+            fired.append(days)
+
+    def clear_rest(self, driver_id: str) -> None:
+        rec = self._rec(driver_id)
+        rec["rest_since"] = None
+        rec["off_duty_checkin_fired"] = []
+
+    def rest_days(self, driver_id: str, now: datetime) -> float | None:
+        """Days this driver has been resting, or None if they are working."""
+        since = self._drivers.get(driver_id, {}).get("rest_since")
+        if not since:
+            return None
+        try:
+            dt = datetime.fromisoformat(since)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - dt).total_seconds() / 86400)

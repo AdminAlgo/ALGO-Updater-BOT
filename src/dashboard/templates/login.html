@@ -2,18 +2,27 @@
 {% block title %}Log in — ALGO Updater{% endblock %}
 {% block content %}
 <div class="login-card">
-  <h1>ALGO Updater — Admin{% if app_env == 'staging' %}<span class="env-badge">TEST</span>{% endif %}</h1>
+  <div class="login-brand">
+    <span class="brand-mark">A</span>
+    <div>
+      <div class="login-title">ALGO Updater{% if app_env == 'staging' %}<span class="env-badge">TEST</span>{% endif %}</div>
+      <div class="text-muted" style="font-size:.82rem;">HOS alert control panel</div>
+    </div>
+  </div>
   {% if app_env == 'staging' %}
-  <p class="hint" style="margin-top:-.4rem;">
-    Test platform — alerts are never sent to drivers from here.
-  </p>
+  <p class="hint">Test platform — alerts only reach the test groups it is allowed to message.</p>
   {% endif %}
   {% if error %}<p class="flash-error">{{ error }}</p>{% endif %}
   <form method="post">
-    <label>Password
-      <input type="password" name="password" autofocus required>
+    <label>Username
+      <input type="text" name="username" value="{{ username }}" autocomplete="username"
+             autocapitalize="none" spellcheck="false" required {{ 'autofocus' if not username }}>
     </label>
-    <button type="submit" class="btn" style="width:100%;">Log in</button>
+    <label>Password
+      <input type="password" name="password" autocomplete="current-password" required
+             {{ 'autofocus' if username }}>
+    </label>
+    <button type="submit" class="btn" style="width:100%;margin-top:.5rem;">Log in</button>
   </form>
 </div>
 {% endblock %}

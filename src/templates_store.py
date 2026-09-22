@@ -76,7 +76,70 @@ class TemplateStore:
         return changed
 
     @staticmethod
-    def render(template: dict, language: str) -> str:
-        """The template's text in ``language``, falling back to English."""
+    def render(template: dict, language: str, values: dict | None = None) -> str:
+        """The template's text in ``language`` (English fallback), with
+        {name} / {company} / {truck} filled in. An unknown or broken
+        placeholder is left as typed rather than failing the send."""
         text = template.get("text") or {}
-        return text.get(language) or text.get("en") or ""
+        body = text.get(language) or text.get("en") or ""
+        if not values:
+            return body
+        try:
+            return body.format_map(_Keep(values))
+        except (ValueError, IndexError, AttributeError):
+            return body
+
+    def seed_defaults(self) -> None:
+        """First run only: ready-made messages the dispatchers asked for."""
+        if self._templates:
+            return
+        for name, text in DEFAULT_TEMPLATES:
+            self.add(name, text)
+
+
+class _Keep(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+#: placeholders a broadcast template may use
+PLACEHOLDERS = ("name", "company", "truck")
+
+DEFAULT_TEMPLATES = [
+    ("Inspection week (CVSA Roadcheck)", {
+        "en": ("Hello.\nDear {name}\n\nThis week is inspection week (CVSA International "
+               "Roadcheck). Please make sure your ELD is connected and your logs are up to "
+               "date, your paperwork (registration, insurance, medical card, ELD instruction "
+               "sheet) is in the truck, and do a full pre-trip inspection every day.\n\n"
+               "If you have any questions, let us know.\n\nThank you."),
+        "ru": ("Здравствуйте.\nУважаемый {name}\n\nНа этой неделе проходит неделя инспекций "
+               "(CVSA International Roadcheck). Пожалуйста, убедитесь, что ELD подключён и логи "
+               "в порядке, документы (регистрация, страховка, медицинская карта, инструкция ELD) "
+               "находятся в траке, и каждый день проводите полный pre-trip осмотр.\n\n"
+               "Если есть вопросы, сообщите нам.\n\nСпасибо."),
+        "uz": ("Salom.\nHurmatli {name}\n\nShu hafta inspeksiya haftasi (CVSA International "
+               "Roadcheck). Iltimos, ELD ulanganiga va loglaringiz tartibda ekaniga, hujjatlar "
+               "(registratsiya, sug'urta, tibbiy karta, ELD yo'riqnomasi) trakda ekaniga ishonch "
+               "hosil qiling va har kuni to'liq pre-trip ko'rigini o'tkazing.\n\n"
+               "Savollaringiz bo'lsa, bizga xabar bering.\n\nRahmat."),
+        "es": ("Hola.\nEstimado {name}\n\nEsta semana es la semana de inspecciones (CVSA "
+               "International Roadcheck). Por favor, asegúrese de que su ELD esté conectado y "
+               "sus registros al día, que sus documentos (registro, seguro, tarjeta médica, "
+               "instrucciones del ELD) estén en el camión, y haga una inspección pre-viaje "
+               "completa cada día.\n\nSi tiene alguna pregunta, avísenos.\n\nGracias."),
+    }),
+    ("Check your ELD connection", {
+        "en": ("Hello.\nDear {name}\n\nPlease check that your ELD device is connected and "
+               "your logs are recording correctly. If you see any problem, let us know right "
+               "away.\n\nThank you."),
+        "ru": ("Здравствуйте.\nУважаемый {name}\n\nПожалуйста, проверьте, что ваше устройство "
+               "ELD подключено и логи записываются правильно. Если видите проблему, сразу "
+               "сообщите нам.\n\nСпасибо."),
+        "uz": ("Salom.\nHurmatli {name}\n\nIltimos, ELD qurilmangiz ulanganini va loglar "
+               "to'g'ri yozilayotganini tekshiring. Muammo ko'rsangiz, darhol bizga xabar "
+               "bering.\n\nRahmat."),
+        "es": ("Hola.\nEstimado {name}\n\nPor favor, verifique que su dispositivo ELD esté "
+               "conectado y que sus registros se graben correctamente. Si ve algún problema, "
+               "avísenos de inmediato.\n\nGracias."),
+    }),
+]

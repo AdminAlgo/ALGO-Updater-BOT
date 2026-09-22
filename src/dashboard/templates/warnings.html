@@ -1,100 +1,141 @@
 {% extends "base.html" %}
 {% block title %}Warnings — ALGO Updater{% endblock %}
 {% block content %}
-<h1>Warnings</h1>
+<div class="page-head"><h1>Warnings &amp; messages</h1></div>
+
+{% if preview %}
+<section class="section-accent">
+  <h2>Check before sending: “{{ preview.template.name }}”</h2>
+  <p>Goes to <b>{{ preview.count }}</b> driver group{{ 's' if preview.count != 1 }}
+    {% if preview.dispatch %}+ <b>{{ preview.dispatch }}</b> Dispatch group(s){% endif %}.
+    {% if preview.skipped %}<span class="text-amber">{{ preview.skipped }} skipped — no group or updates off.</span>{% endif %}</p>
+  {% if preview.names %}<p class="text-muted">{{ preview.names|join(', ') }}{% if preview.count > preview.names|length %}, +{{ preview.count - preview.names|length }} more{% endif %}</p>{% endif %}
+  <div class="grid-2">
+    {% for s in preview.samples %}
+    <div class="msg-preview">
+      <div class="msg-head">{{ s.label }} · {{ s.count }} driver{{ 's' if s.count != 1 }}</div>
+      <pre>{{ s.text }}</pre>
+    </div>
+    {% endfor %}
+  </div>
+  {% if preview.count %}
+  <form method="post" action="{{ url_for('warnings.send') }}" class="inline-actions">
+    {% for k in ('audience', 'company', 'driver_id', 'template_id') %}<input type="hidden" name="{{ k }}" value="{{ choice[k] }}">{% endfor %}
+    <input type="hidden" name="dispatch" value="{{ '1' if choice.dispatch else '' }}">
+    <button type="submit" class="btn">Send now to {{ preview.count }} driver{{ 's' if preview.count != 1 }}</button>
+    <a class="btn btn-secondary" href="{{ url_for('warnings.index') }}">Cancel</a>
+  </form>
+  {% else %}
+  <p class="flash-error">Nobody would receive this — no matching driver has a linked group with updates on.</p>
+  {% endif %}
+</section>
+{% endif %}
 
 <section>
-  <h2>Compose &amp; send</h2>
-  <form method="post" action="{{ url_for('warnings.send') }}">
-    <label>Audience
+  <h2>Send a message</h2>
+  <form method="post" action="{{ url_for('warnings.preview') }}" class="form-grid">
+    <label>Message
+      <select name="template_id" required>
+        {% for t in templates %}<option value="{{ t.id }}" {{ 'selected' if t.id == choice.template_id }}>{{ t.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Send to
       <select name="audience" id="audienceSelect">
-        <option value="all">All companies</option>
-        <option value="company">One company</option>
-        <option value="driver">One driver</option>
+        <option value="all" {{ 'selected' if choice.audience == 'all' }}>All drivers (every company)</option>
+        <option value="company" {{ 'selected' if choice.audience == 'company' }}>One company</option>
+        <option value="driver" {{ 'selected' if choice.audience == 'driver' }}>One driver</option>
       </select>
     </label>
-    <label id="companyField" style="display:none;">Company
+    <label data-show-when="company">Company
       <select name="company">
-        {% for name in companies %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
+        {% for name in companies %}<option value="{{ name }}" {{ 'selected' if name == choice.company }}>{{ name }}</option>{% endfor %}
       </select>
     </label>
-    <label id="driverField" style="display:none;">Driver
+    <label data-show-when="driver">Driver
       <select name="driver_id">
-        {% for did, rec in drivers %}<option value="{{ did }}">{{ rec.driver_name }}</option>{% endfor %}
+        {% for r in drivers %}<option value="{{ r.driver_id }}" {{ 'selected' if r.driver_id == choice.driver_id }}>{{ r.name }} — {{ r.company }}</option>{% endfor %}
       </select>
     </label>
-    <label>Template
-      <select name="template_id">
-        {% for t in templates %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
-      </select>
-    </label>
-    {% if not templates %}<p class="text-muted">No templates yet — create one below first.</p>{% endif %}
-    <button type="submit" class="btn" {{ 'disabled' if not templates }}>Send now</button>
+    <label class="switch-row"><input type="checkbox" name="dispatch" value="1" {{ 'checked' if choice.dispatch }}> Also send to their Dispatch groups</label>
+    <div><button type="submit" class="btn" {{ 'disabled' if not templates }}>Preview</button></div>
   </form>
-  <script>
-    (function () {
-      var sel = document.getElementById('audienceSelect');
-      var company = document.getElementById('companyField');
-      var driver = document.getElementById('driverField');
-      function sync() {
-        company.style.display = sel.value === 'company' ? '' : 'none';
-        driver.style.display = sel.value === 'driver' ? '' : 'none';
-      }
-      if (sel) { sel.addEventListener('change', sync); sync(); }
-    })();
-  </script>
+  <p class="hint">Each driver gets the message in their own language (Drivers → ⋮ → language, or the company default).
+    Drivers with updates turned OFF are skipped.</p>
 </section>
 
 <section>
-  <h2>Template library</h2>
+  <div class="section-head">
+    <h2>Message types ({{ templates|length }})</h2>
+    <button type="button" class="btn btn-sm" data-open-modal="templateModal" data-id="" data-title="New message type"
+            data-field-name="" data-field-template_id=""
+            {% for code, _ in languages %}data-field-text_{{ code }}=""{% endfor %}>+ New message type</button>
+  </div>
   <table>
     <thead><tr><th>Name</th><th>Languages</th><th>Created</th><th></th></tr></thead>
     <tbody>
       {% for t in templates %}
       <tr>
-        <td>{{ t.name }}</td>
-        <td>{{ (t.text.keys()|list)|join(', ')|upper }}</td>
+        <td><b>{{ t.name }}</b></td>
+        <td>{% for code, _ in languages %}<span class="chip {{ 'chip-blue' if t.text.get(code) else 'chip-muted' }}">{{ code|upper }}</span> {% endfor %}</td>
         <td class="text-muted">{{ t.created[:10] }}</td>
-        <td>
-          <button type="button" class="btn btn-sm"
-                  data-open-modal="templateModal"
-                  data-id="{{ t.id }}"
-                  data-field-name="{{ t.name }}"
-                  data-field-template_id="{{ t.id }}"
-                  {% for code, _ in languages %}data-field-text_{{ code }}="{{ t.text.get(code, '') }}"{% endfor %}>
-            Edit
-          </button>
-          <form method="post" action="{{ url_for('warnings.delete_template', template_id=t.id) }}" style="display:inline;">
+        <td class="nowrap">
+          <a class="btn btn-sm btn-secondary" href="{{ url_for('warnings.index', template_id=t.id) }}">Use</a>
+          <button type="button" class="btn btn-sm btn-secondary" data-open-modal="templateModal" data-id="{{ t.id }}"
+                  data-title="{{ t.name }}" data-field-name="{{ t.name }}" data-field-template_id="{{ t.id }}"
+                  {% for code, _ in languages %}data-field-text_{{ code }}="{{ t.text.get(code, '') }}"{% endfor %}>Edit</button>
+          <form method="post" action="{{ url_for('warnings.delete_template', template_id=t.id) }}" style="display:inline;"
+                data-confirm="Delete the message type “{{ t.name }}”?">
             <button type="submit" class="btn btn-sm btn-danger">Delete</button>
           </form>
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="4" class="text-muted">No templates yet.</td></tr>
+      <tr><td colspan="4" class="text-muted empty">No message types yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
-  <button type="button" class="btn"
-          data-open-modal="templateModal" data-id=""
-          data-field-name="" data-field-template_id=""
-          {% for code, _ in languages %}data-field-text_{{ code }}=""{% endfor %}>
-    + New template
-  </button>
+  <p class="hint">Placeholders you can use: {% for p in placeholders %}<code>{{ '{' ~ p ~ '}' }}</code> {% endfor %}— filled in per driver.</p>
+</section>
+
+<section id="alert-texts">
+  <h2>Automatic alert texts</h2>
+  <p class="text-muted">The wording of the updates the bot sends by itself, in every language. Edit and save —
+    it is used from the next alert on. <b>Reset</b> goes back to the built-in text.</p>
+  {% for a in alert_texts %}
+  <details class="text-editor" {{ 'open' if open_kind == a.kind }}>
+    <summary><b>{{ a.label }}</b>
+      {% if a.custom %}<span class="chip chip-amber">edited: {{ a.custom|join(', ')|upper }}</span>{% endif %}</summary>
+    <form method="post" action="{{ url_for('warnings.save_alert_text', kind=a.kind) }}">
+      <div class="grid-2">
+        {% for code, label in languages %}
+        <label>{{ label }}<textarea name="text_{{ code }}" rows="8">{{ a.texts[code] }}</textarea></label>
+        {% endfor %}
+      </div>
+      <p class="hint">Placeholders: {% for p in a.placeholders %}<code>{{ '{' ~ p ~ '}' }}</code> {% endfor %}</p>
+      <div class="inline-actions">
+        <button type="submit" class="btn btn-sm">Save</button>
+        {% if a.custom %}<button type="submit" name="reset" value="1" class="btn btn-sm btn-secondary">Reset to built-in</button>{% endif %}
+      </div>
+    </form>
+  </details>
+  {% endfor %}
 </section>
 
 <div class="modal-overlay" id="templateModalOverlay">
-  <div class="modal" id="templateModal">
-    <h2>Template</h2>
+  <div class="modal modal-wide" id="templateModal">
+    <h2><span data-modal-title></span></h2>
     <form method="post" action="{{ url_for('warnings.save_template') }}">
       <input type="hidden" name="template_id">
-      <div class="field"><label>Name <input type="text" name="name" required></label></div>
+      <div class="field"><label>Name <input type="text" name="name" required placeholder="e.g. Inspection week"></label></div>
+      <div class="grid-2">
       {% for code, label in languages %}
       <div class="field">
-        <label>{{ label }}{{ ' (required)' if code == 'en' else ' (optional — falls back to English)' }}
-          <textarea name="text_{{ code }}" rows="3"></textarea>
+        <label>{{ label }}{{ ' (required)' if code == 'en' else ' (optional — English is used if empty)' }}
+          <textarea name="text_{{ code }}" rows="7"></textarea>
         </label>
       </div>
       {% endfor %}
+      </div>
       <div class="actions">
         <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
         <button type="submit" class="btn">Save</button>

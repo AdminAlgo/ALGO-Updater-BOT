@@ -7,22 +7,36 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script defer src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
-<body class="{{ 'authed' if session.get('authed') else 'guest' }}" data-env="{{ app_env }}">
+<body class="{{ 'authed' if session.get('authed') else 'guest' }}" data-env="{{ app_env }}"
+      {% block body_attrs %}{% endblock %}>
   {% if session.get('authed') %}
+  {% set nav = [
+    ('status', 'status.index', 'Overview'),
+    ('drivers', 'drivers.index', 'Drivers'),
+    ('companies', 'companies.index', 'Companies'),
+    ('watchlists', 'watchlists.index', 'Watchlists'),
+    ('groups', 'groups.index', 'Groups'),
+    ('warnings', 'warnings.index', 'Warnings'),
+    ('stats', 'stats.index', 'Statistics'),
+    ('settings', 'settings.index', 'Settings'),
+  ] %}
   <aside class="sidebar">
-    <div class="brand">ALGO Updater{% if app_env == 'staging' %}<span class="env-badge">TEST</span>{% endif %}</div>
+    <div class="brand">
+      <span class="brand-mark">A</span>
+      <span>ALGO Updater</span>
+      {% if app_env == 'staging' %}<span class="env-badge">TEST</span>{% endif %}
+    </div>
     <nav>
-      <a href="{{ url_for('status.index') }}" class="{{ 'active' if request.blueprint == 'status' else '' }}">Status</a>
-      <a href="{{ url_for('watchlists.index') }}" class="{{ 'active' if request.blueprint == 'watchlists' else '' }}">Watchlists</a>
-      <a href="{{ url_for('companies.index') }}" class="{{ 'active' if request.blueprint == 'companies' else '' }}">Companies</a>
-      <a href="{{ url_for('drivers.index') }}" class="{{ 'active' if request.blueprint == 'drivers' else '' }}">Drivers</a>
-      <a href="{{ url_for('groups.index') }}" class="{{ 'active' if request.blueprint == 'groups' else '' }}">Groups</a>
-      <a href="{{ url_for('warnings.index') }}" class="{{ 'active' if request.blueprint == 'warnings' else '' }}">Warnings</a>
-      <a href="{{ url_for('stats.index') }}" class="{{ 'active' if request.blueprint == 'stats' else '' }}">Statistics</a>
+      {% for bp_name, endpoint, label in nav %}
+      <a href="{{ url_for(endpoint) }}" class="{{ 'active' if request.blueprint == bp_name else '' }}">{{ label }}</a>
+      {% endfor %}
     </nav>
-    <form method="post" action="{{ url_for('auth.logout') }}" class="logout-form">
-      <button type="submit" class="btn btn-secondary" style="width:100%;">Log out</button>
-    </form>
+    <div class="sidebar-foot">
+      <div class="text-muted who-am-i">Signed in as <b>{{ session.get('user', 'admin') }}</b></div>
+      <form method="post" action="{{ url_for('auth.logout') }}" class="logout-form">
+        <button type="submit" class="btn btn-secondary" style="width:100%;">Log out</button>
+      </form>
+    </div>
   </aside>
   {% endif %}
   <main>

@@ -44,6 +44,7 @@ def create_app(runtime: RuntimeContext) -> Flask:
     from .views.drivers import bp as drivers_bp
     from .views.groups import bp as groups_bp
     from .views.health import bp as health_bp
+    from .views.settings import bp as settings_bp
     from .views.stats import bp as stats_bp
     from .views.status import bp as status_bp
     from .views.warnings import bp as warnings_bp
@@ -57,6 +58,7 @@ def create_app(runtime: RuntimeContext) -> Flask:
     app.register_blueprint(groups_bp)
     app.register_blueprint(warnings_bp)
     app.register_blueprint(stats_bp)
+    app.register_blueprint(settings_bp)
     app.register_blueprint(health_bp)
 
     return app

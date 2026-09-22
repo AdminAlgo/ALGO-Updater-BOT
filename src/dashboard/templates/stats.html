@@ -1,32 +1,114 @@
 {% extends "base.html" %}
 {% block title %}Statistics — ALGO Updater{% endblock %}
 {% block content %}
-<h1>Statistics</h1>
-<p class="text-muted">{{ total_active }} registered driver(s) currently.</p>
+<div class="page-head">
+  <h1>Statistics</h1>
+  <div class="head-actions text-muted">
+    {% if first_entry %}Recorded since {{ first_entry.strftime('%b %d, %Y') }}{% else %}Nothing recorded yet{% endif %}
+  </div>
+</div>
 
-{% for bucket, label in (("day", "Last 24 hours"), ("week", "Last 7 days"), ("month", "Last 30 days"), ("all_time", "All time")) %}
-{% set b = buckets.get(bucket) %}
+<div class="seg seg-lg">
+  {% for key, label in periods %}
+  <a class="seg-btn {{ 'active' if key == selected }}" href="{{ url_for('stats.index', period=key) }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+<div class="tiles">
+  <div class="tile">
+    <div class="tile-num">{{ b.reached }}<span class="tile-of"> / {{ monitored }}</span></div>
+    <div class="tile-label">Drivers who got at least one update · <b>{{ b.reached_pct }}%</b>
+      {% if b.reached_linked_pct is not none %}<br><span class="text-muted">{{ b.reached_linked_pct }}% of the {{ linked }} with a group</span>{% endif %}</div>
+  </div>
+  <div class="tile">
+    <div class="tile-num">{{ b.delivered }}</div>
+    <div class="tile-label">Updates delivered
+      {% if b.failed %}<br><span class="text-red">{{ b.failed }} failed</span>{% endif %}
+      {% if b.withheld %}<br><span class="text-amber">{{ b.withheld }} withheld (test mode)</span>{% endif %}</div>
+  </div>
+  <div class="tile {{ 'tile-red' if b.violations }}">
+    <div class="tile-num">{{ b.violations }}</div>
+    <div class="tile-label">14-hour violations</div>
+  </div>
+  <div class="tile {{ 'tile-red' if b.violation_drivers }}">
+    <div class="tile-num">{{ b.violation_drivers }}</div>
+    <div class="tile-label">Drivers with a violation · <b>{{ b.violation_drivers_pct }}%</b> of fleet</div>
+  </div>
+</div>
+
 <section>
-  <h2>{{ label }}</h2>
-  {% if b and b.total %}
-  <p>
-    <strong>{{ b.total }}</strong> sends —
-    <span class="chip chip-green">{{ b.delivered }} delivered</span>
-    {% if b.failed %}<span class="chip chip-red">{{ b.failed }} failed</span>{% endif %}
-    · <span class="chip chip-blue">{{ b.reached_pct }}% of drivers reached</span>
-    ({{ b.reached }}/{{ total_active }})
-  </p>
+  <h2>Updates per day — last 30 days</h2>
+  <div class="bars">
+    {% for d in series %}
+    <div class="bar-col" title="{{ d.label }}: {{ d.sent }} sent, {{ d.violations }} violation(s)">
+      <div class="bar-stack"><i style="height:{{ d.pct }}%"></i>{% if d.violations %}<em class="bar-dot"></em>{% endif %}</div>
+      {% if loop.index0 % 5 == 0 or loop.last %}<span>{{ d.label }}</span>{% else %}<span>&nbsp;</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  <p class="hint">Red dot = a day with a 14-hour violation.</p>
+</section>
+
+<div class="grid-2">
+<section>
+  <h2>By alert type</h2>
   <table>
-    <thead><tr><th>Kind</th><th>Count</th></tr></thead>
+    <thead><tr><th>Type</th><th>Sent</th><th>Drivers</th><th>Failed</th></tr></thead>
     <tbody>
-      {% for kind, count in b.by_kind.items() %}
-      <tr><td>{{ kind }}</td><td>{{ count }}</td></tr>
+      {% for kind, v in b.by_kind.items() %}
+      <tr><td>{{ kind_label(kind) }}</td><td><b>{{ v.sent }}</b></td><td>{{ v.drivers }}</td>
+        <td class="{{ 'text-red' if v.failed }}">{{ v.failed }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="text-muted empty">Nothing sent in this period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
-  {% else %}
-  <p class="text-muted">No sends in this window.</p>
-  {% endif %}
 </section>
-{% endfor %}
+
+<section>
+  <h2>Most violations</h2>
+  <table>
+    <thead><tr><th>Driver</th><th>Company</th><th>Violations</th></tr></thead>
+    <tbody>
+      {% for v in b.top_violators %}
+      <tr><td>{{ v.name }}</td><td class="text-muted">{{ v.company }}</td><td class="text-red"><b>{{ v.count }}</b></td></tr>
+      {% else %}
+      <tr><td colspan="3" class="text-muted empty">No 14-hour violations in this period.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+</div>
+
+<section>
+  <h2>By company</h2>
+  <table>
+    <thead><tr><th>Company</th><th>Updates sent</th><th>Drivers reached</th><th>Violations</th><th>Failed</th></tr></thead>
+    <tbody>
+      {% for c in b.companies %}
+      <tr><td>{{ c.name }}</td><td><b>{{ c.sent }}</b></td><td>{{ c.drivers }}</td>
+        <td class="{{ 'text-red' if c.violations }}">{{ c.violations }}</td>
+        <td class="{{ 'text-red' if c.failed }}">{{ c.failed }}</td></tr>
+      {% else %}
+      <tr><td colspan="5" class="text-muted empty">Nothing sent in this period.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>All periods side by side</h2>
+  <table>
+    <thead><tr><th></th>{% for key, label in periods %}<th>{{ label }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      <tr><td>Drivers reached</td>{% for key, _ in periods %}<td>{{ buckets[key].reached }} <span class="text-muted">({{ buckets[key].reached_pct }}%)</span></td>{% endfor %}</tr>
+      <tr><td>Updates delivered</td>{% for key, _ in periods %}<td>{{ buckets[key].delivered }}</td>{% endfor %}</tr>
+      <tr><td>Failed</td>{% for key, _ in periods %}<td class="{{ 'text-red' if buckets[key].failed }}">{{ buckets[key].failed }}</td>{% endfor %}</tr>
+      <tr><td>14-hour violations</td>{% for key, _ in periods %}<td class="{{ 'text-red' if buckets[key].violations }}">{{ buckets[key].violations }}</td>{% endfor %}</tr>
+      <tr><td>Drivers with a violation</td>{% for key, _ in periods %}<td>{{ buckets[key].violation_drivers }} <span class="text-muted">({{ buckets[key].violation_drivers_pct }}%)</span></td>{% endfor %}</tr>
+    </tbody>
+  </table>
+  <p class="hint">% is of the {{ monitored }} drivers on the live roster right now. A violation is counted once
+    per episode — the reminder messages sent while it lasts are not counted again.</p>
+</section>
 {% endblock %}

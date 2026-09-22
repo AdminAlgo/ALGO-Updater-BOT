@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Settings — ALGO Updater{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Settings</h1></div>
+
+{% if durable is false %}
+<div class="callout callout-red">These settings are saved to <code>{{ config_path }}</code>, which is <b>not</b> on the
+  data volume — a redeploy puts them back. Set <code>CONFIG_PATH=/data/config.yaml</code> on Railway.</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('settings.save') }}">
+<div class="grid-2">
+  <section>
+    <h2>Vacation check-in</h2>
+    <label>Send “are you okay?” after this many days Off Duty
+      <input type="text" name="off_duty_checkin_days" value="{{ c.off_duty_checkin_days|join(', ') }}" placeholder="2, 3">
+    </label>
+    <p class="hint">One message at each number of days (e.g. <code>2, 3</code> or <code>3, 5</code>). Empty = off.
+      Off Duty, Sleeper and PC all count as “off”; the count restarts when the driver goes back on duty.</p>
+  </section>
+
+  <section>
+    <h2>Low hours</h2>
+    <label>Warn the driver at (minutes left on Drive / Shift / Break)
+      <input type="text" name="low_hours" value="{{ c.low_hours_thresholds_minutes.driver_group|join(', ') }}" placeholder="120, 60, 30">
+    </label>
+    <label>70-hour Cycle warning at (hours left)
+      <input type="text" name="cycle" value="{{ c.cycle_alert_thresholds_hours|join(', ') }}" placeholder="10, 5">
+    </label>
+    <label>“Low time” line on Watchlists and counters (minutes)
+      <input type="number" min="1" name="watchlist_low_minutes" value="{{ c.watchlist_low_minutes }}">
+    </label>
+  </section>
+
+  <section>
+    <h2>ELD disconnected</h2>
+    <label class="switch-row"><input type="checkbox" name="disconnect_alerts_enabled" value="1" {{ 'checked' if c.disconnect_alerts_enabled }}>
+      Send disconnect alerts (all companies)</label>
+    <label>Count as disconnected after no data for (minutes)
+      <input type="number" min="1" name="disconnect_stale_minutes" value="{{ c.disconnect_stale_minutes }}">
+    </label>
+    <label>Repeat the alert every (minutes) while still disconnected
+      <input type="number" min="1" name="disconnect_realert_minutes" value="{{ c.disconnect_realert_minutes }}">
+    </label>
+  </section>
+
+  <section>
+    <h2>Violations &amp; long On Duty</h2>
+    <label>Repeat the 14-hour violation alert every (minutes)
+      <input type="number" min="1" name="shift_violation_resend_minutes" value="{{ c.shift_violation_resend_minutes }}">
+    </label>
+    <label>Welfare check after this many hours On Duty
+      <input type="number" min="1" name="on_duty_alert_hours" value="{{ (c.on_duty_alert_hours or 2)|int }}">
+    </label>
+    <label class="switch-row"><input type="checkbox" name="on_duty_off" value="1" {{ 'checked' if not c.on_duty_alert_hours }}>
+      Turn the long On Duty check off</label>
+  </section>
+</div>
+<button type="submit" class="btn">Save settings</button>
+<p class="hint">Per-company and per-driver switches live on Companies → ⋮ → Alert types, and Drivers → ⋮.</p>
+</form>
+{% endblock %}

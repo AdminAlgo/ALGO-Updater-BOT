@@ -407,6 +407,16 @@ class GroupRegistry:
         rec = self._groups.get(str(chat_id))
         return rec.get("title") if rec else None
 
+    def find_groups(self, text: str) -> list[str]:
+        """Chat ids of known groups whose title equals ``text`` (case- and
+        space-insensitive). Lets an operator type a group's NAME instead of
+        its numeric id; more than one hit means the name is ambiguous."""
+        want = normalize_name(text)
+        if not want:
+            return []
+        return [cid for cid, rec in list(self._groups.items())
+                if normalize_name(rec.get("title") or "") == want]
+
     def forget_group(self, chat_id) -> None:
         """Bot was removed from the group — drop it from the assignable pool."""
         cid = str(chat_id)
@@ -501,8 +511,10 @@ class GroupRegistry:
             "tg_username": prev.get("tg_username"),
             "tg_user_id": prev.get("tg_user_id"),
             "dispatch_chat_id": prev.get("dispatch_chat_id"),
-            "language": prev.get("language") or "en",
+            # None = follow the company's default language (en if it has none).
+            "language": prev.get("language") or None,
             "disabled_kinds": list(prev.get("disabled_kinds") or []),
+            "paused": bool(prev.get("paused", False)),
         }
         return changed
 
@@ -518,6 +530,35 @@ class GroupRegistry:
         rec = self._drivers.get(driver_id)
         return (rec.get("language") if rec else None) or "en"
 
+    def explicit_language(self, driver_id: str) -> str | None:
+        """The language set on this driver, or None to use the company default."""
+        rec = self._drivers.get(driver_id)
+        return (rec.get("language") if rec else None) or None
+
+    def is_paused(self, driver_id: str) -> bool:
+        """True when every update to this driver is switched off."""
+        rec = self._drivers.get(driver_id)
+        return bool(rec and rec.get("paused"))
+
+    def set_paused(self, driver_id: str, paused: bool) -> bool:
+        """Switch all of a linked driver's updates off/on. False if not linked."""
+        rec = self._drivers.get(driver_id)
+        if not rec:
+            return False
+        rec["paused"] = bool(paused)
+        return True
+
+    def set_language_many(self, driver_ids, language: str | None) -> int:
+        """Set (or clear, with None) the language on every listed driver that
+        has a record. Returns how many changed."""
+        n = 0
+        for did in driver_ids:
+            rec = self._drivers.get(did)
+            if rec is not None and rec.get("language") != language:
+                rec["language"] = language
+                n += 1
+        return n
+
     def disabled_kinds_for(self, driver_id: str) -> list[str]:
         rec = self._drivers.get(driver_id)
         return list(rec.get("disabled_kinds") or []) if rec else []
@@ -527,8 +568,10 @@ class GroupRegistry:
     def update_driver_settings(self, driver_id: str, *, driver_name: str | None = None,
                                chat_id: str | None = None,
                                dispatch_chat_id=_UNSET,
-                               language: str | None = None,
-                               disabled_kinds: list[str] | None = None) -> None:
+                               language=_UNSET,
+                               disabled_kinds: list[str] | None = None,
+                               paused: bool | None = None,
+                               title: str | None = None) -> None:
         """Create-or-update the fields the Drivers-page Edit modal manages.
 
         ``dispatch_chat_id`` defaults to a sentinel so "not passed" (leave
@@ -540,18 +583,25 @@ class GroupRegistry:
             "chat_id": "", "title": "", "matched_on": "manual",
             "driver_name": driver_name or driver_id,
             "tg_username": None, "tg_user_id": None,
-            "dispatch_chat_id": None, "language": "en", "disabled_kinds": [],
+            "dispatch_chat_id": None, "language": None, "disabled_kinds": [],
+            "paused": False,
         })
         if driver_name:
             rec["driver_name"] = driver_name
         if chat_id is not None:
+            if str(chat_id) != str(rec.get("chat_id")):
+                rec["matched_on"] = "manual"
             rec["chat_id"] = str(chat_id)
+        if title is not None:
+            rec["title"] = title
         if dispatch_chat_id is not GroupRegistry._UNSET:
             rec["dispatch_chat_id"] = str(dispatch_chat_id) if dispatch_chat_id else None
-        if language is not None:
-            rec["language"] = language
+        if language is not GroupRegistry._UNSET:
+            rec["language"] = language or None
         if disabled_kinds is not None:
             rec["disabled_kinds"] = list(disabled_kinds)
+        if paused is not None:
+            rec["paused"] = bool(paused)
 
     # --- driver Telegram tag (for @mentions) --- #
     # Readers iterate over a snapshot copy: the scheduler thread reads the

@@ -32,15 +32,21 @@ document.addEventListener('click', function (e) {
       Array.prototype.slice.call(opener.attributes).forEach(function (attr) {
         var m = attr.name.match(/^data-field-(.+)$/);
         if (!m) return;
-        var field = modal.querySelector('[name="' + m[1] + '"]');
-        if (!field) return;
-        if (field.type === 'checkbox') {
-          var values = (attr.value || '').split(',').filter(Boolean);
-          field.checked = values.indexOf(field.value) !== -1;
-        } else {
-          field.value = attr.value;
-        }
+        // querySelectorAll, not querySelector: a group of checkboxes shares one
+        // name, and filling only the first left the rest unticked — so saving
+        // the dialog silently switched those alert types off.
+        var fields = modal.querySelectorAll('[name="' + m[1] + '"]');
+        var values = (attr.value || '').split(',').filter(Boolean);
+        Array.prototype.forEach.call(fields, function (field) {
+          if (field.type === 'checkbox') {
+            field.checked = values.indexOf(field.value) !== -1;
+          } else {
+            field.value = attr.value;
+          }
+        });
       });
+      var titleEl = modal.querySelector('[data-modal-title]');
+      if (titleEl) titleEl.textContent = opener.getAttribute('data-title') || '';
       var form = modal.querySelector('form[data-action-template]');
       if (form) {
         var id = opener.getAttribute('data-id') || '';
@@ -74,3 +80,52 @@ document.addEventListener('click', function (e) {
   row.classList.toggle('open');
   toggle.textContent = opening ? '▾' : '▸';
 });
+
+// Confirm destructive actions: <form data-confirm="Are you sure?">.
+document.addEventListener('submit', function (e) {
+  var msg = e.target.getAttribute && e.target.getAttribute('data-confirm');
+  if (msg && !window.confirm(msg)) e.preventDefault();
+}, true);
+
+// <select data-autosubmit> submits its form on change (filters, sort).
+document.addEventListener('change', function (e) {
+  if (e.target.matches && e.target.matches('select[data-autosubmit]')) e.target.form.submit();
+});
+
+// Instant search: <input data-filter-table="tableId"> hides non-matching rows.
+document.addEventListener('input', function (e) {
+  var id = e.target.getAttribute && e.target.getAttribute('data-filter-table');
+  if (!id) return;
+  var table = document.getElementById(id);
+  if (!table) return;
+  var q = e.target.value.trim().toLowerCase();
+  table.querySelectorAll('tbody tr[data-search]').forEach(function (tr) {
+    tr.style.display = !q || tr.getAttribute('data-search').indexOf(q) !== -1 ? '' : 'none';
+  });
+});
+
+// Warnings form: show the Company / Driver picker only for that audience.
+(function () {
+  var sel = document.getElementById('audienceSelect');
+  if (!sel) return;
+  function sync() {
+    document.querySelectorAll('[data-show-when]').forEach(function (el) {
+      el.style.display = el.getAttribute('data-show-when') === sel.value ? '' : 'none';
+    });
+  }
+  sel.addEventListener('change', sync);
+  sync();
+})();
+
+// Live pages (<body data-autorefresh="120">) reload themselves like the ELD
+// platform does — but never while you are typing, in a menu, or in a dialog.
+(function () {
+  var secs = parseInt(document.body.getAttribute('data-autorefresh') || '0', 10);
+  if (!secs) return;
+  setInterval(function () {
+    var el = document.activeElement;
+    var busy = document.querySelector('.modal-overlay.open, .kebab.open') ||
+      (el && /INPUT|TEXTAREA|SELECT/.test(el.tagName));
+    if (!busy && !document.hidden) window.location.reload();
+  }, secs * 1000);
+})();
