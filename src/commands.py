@@ -27,7 +27,8 @@ import time
 from datetime import datetime, timezone
 
 from .eld.base import normalize_name
-from .registry import Candidate, GroupRegistry, _name_matches, match_unique
+from .registry import (Candidate, GroupRegistry, _name_matches, best_match,
+                       match_sender, unique_drivers)
 
 log = logging.getLogger("eld_alert_bot")
 
@@ -35,6 +36,7 @@ _CHAT_ID_CHARS = set("-0123456789")
 
 # Slash-command menu shown in Telegram's compose box (setMyCommands).
 _BOT_COMMANDS = [
+    ("hos", "Hours right now: /hos here, or /hos <name>"),
     ("faq", "How the alerts work — what, when, to whom"),
     ("roster", "Find a driver: /roster <name or truck>"),
     ("groups", "Every group I'm in + who it's assigned to"),
@@ -110,9 +112,11 @@ def _help_text() -> str:
     return (
         "🛠 ALGO Updater — admin controls\n\n"
         "In a driver's group:\n"
+        "  /hos — this driver's hours right now\n"
         "  /add <name> — send this driver's HOS alerts here\n"
         "  /remove <name> — stop this driver's alerts here\n\n"
         "Anywhere (PM me):\n"
+        "  /hos <name> — any driver's hours right now\n"
         "  /roster <search> — find a driver (name / truck)\n"
         "  /groups — every group I'm in + who it's assigned to\n"
         "  /assign <name> | <group-id> — assign a driver to a group\n"
@@ -162,6 +166,12 @@ def _faq_text() -> str:
         "5) LONG ON-DUTY — welfare check\n"
         "• Fires when a driver is On Duty (not driving) for 2 h straight.\n"
         "• → the driver's group. Once per On-Duty stretch.\n\n"
+
+        "IF I AM QUIET\n"
+        "• Silence is the normal state: nothing is posted until a timer "
+        "actually crosses one of the levels above. Type /hos in a driver's "
+        "group to see their live hours and exactly when the next warning "
+        "would fire.\n\n"
 
         "WHAT DOES NOT ALERT\n"
         "• Off-duty / sleeper drivers (resting).\n"
@@ -258,12 +268,110 @@ def _roster_report(query: str, candidates: list[Candidate]) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Live HOS report (/hos)
+# --------------------------------------------------------------------------- #
+# The alert rules are threshold-driven: nothing is posted until a timer actually
+# drops to 2h/1h/30m (see rules.evaluate_driver). That makes "the bot is quiet"
+# and "the bot is broken" look identical from inside a Telegram group. /hos is
+# the difference — it answers from the same snapshot the rules are evaluating,
+# so a quiet bot can prove it is watching.
+
+#: mirrors rules.evaluate_driver's BREAK_FULL guard
+_BREAK_FULL = 8 * 3600
+
+
+def _ago(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown"
+    s = int(seconds)
+    if s < 90:
+        return f"{s}s ago"
+    if s < 5400:
+        return f"{s // 60}m ago"
+    return f"{s // 3600}h {(s % 3600) // 60:02d}m ago"
+
+
+def _hos_report(snap, company: str, registry: GroupRegistry,
+                thresholds: list[int] | None = None) -> str:
+    """One driver's live hours, rendered for a Telegram group."""
+    hos = snap.hos
+    conn = snap.connection
+    head = [f"🚦 {snap.name}"]
+    sub = [b for b in (company, f"truck {conn.vehicle_number}" if conn.vehicle_number else "")
+           if b]
+    if sub:
+        head.append(" · ".join(sub))
+    head.append(f"Duty status: {snap.duty_status_label}")
+
+    body = [
+        "",
+        "⏱ Time remaining",
+        f"  Drive:  {hos.drive_hm()}",
+        f"  Shift:  {hos.shift_hm()}",
+        f"  Break:  {hos.break_hm()}",
+        f"  Cycle:  {hos.cycle_hm()}",
+        "",
+    ]
+
+    if conn.has_vehicle:
+        body.append(f"🔌 Vehicle {conn.vehicle_status or 'unknown'} · "
+                    f"last signal {_ago(conn.staleness_seconds())}")
+    else:
+        body.append("🔌 No vehicle paired — connection unknown")
+
+    # Where this driver's alerts actually go. A driver with no linked group is
+    # the single most common reason for silence, so never leave it implicit.
+    chat = registry.chat_for(snap.driver_id)
+    if chat:
+        # group_title() only knows groups seen in an update this run; the
+        # driver's own record keeps the title it was linked under, which is
+        # what survives a restart.
+        rec = registry.all().get(snap.driver_id) or {}
+        title = registry.group_title(chat) or rec.get("title") or ""
+        body.append(f"📣 Alerts post to {title or chat}")
+    else:
+        body.append("⚠️ No group linked — this driver CANNOT be alerted. "
+                    "Run /add <name> in their group.")
+
+    off = registry.disabled_kinds_for(snap.driver_id)
+    if off:
+        body.append(f"🔕 Muted alert types: {', '.join(off)}")
+
+    # Explain silence before it is mistaken for a fault.
+    no_shift = (hos.shift_seconds <= 0 and hos.drive_seconds <= 0
+                and hos.break_seconds >= _BREAK_FULL - 300)
+    if no_shift:
+        body.append("ℹ️ No active shift on the ELD right now, so no HOS alert "
+                    "can fire — this is normal off duty.")
+    elif thresholds:
+        left = min(hos.drive_seconds, hos.shift_seconds, hos.break_seconds) // 60
+        nxt = [t for t in sorted(thresholds, reverse=True) if left > t]
+        if nxt:
+            body.append(f"➡️ Next warning when the tightest of Drive/Shift/Break "
+                        f"reaches {nxt[0]}m left (now {left}m).")
+        else:
+            body.append(f"➡️ Tightest timer is {left}m — already inside every "
+                        f"warning threshold.")
+
+    return "\n".join(head + body)
+
+
+def _snapshot_index(snapshots) -> dict:
+    """{driver_id: (company_name, DriverSnapshot)} from roster_cache records."""
+    return {s.driver_id: (company, s) for company, s in (snapshots or ())}
+
+
+# --------------------------------------------------------------------------- #
 # Command dispatch
 # --------------------------------------------------------------------------- #
 _ADMIN_CMDS = {
     "/drivers", "/groups", "/roster", "/assign", "/register", "/unassign",
     "/unregister", "/whois", "/unassigned", "/add", "/remove",
 }
+# /hos is deliberately NOT in there. Bare `/hos` only reports on the driver
+# already linked to the group it was typed in — that driver's own data, which
+# they are entitled to. `/hos <name>` searches the whole roster, so the handler
+# gates THAT form on is_admin itself.
 
 
 def _arg(text: str) -> str:
@@ -297,8 +405,14 @@ def _parse_assign_args(text: str, chat: dict) -> tuple[str, str | None, str | No
 
 
 def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegistry,
-                    candidates: list[Candidate], is_admin: bool) -> bool:
-    """Return True if `cmd` is a recognised command (handled or refused)."""
+                    candidates: list[Candidate], is_admin: bool,
+                    snapshots=None, low_hours_thresholds=None) -> bool:
+    """Return True if `cmd` is a recognised command (handled or refused).
+
+    `snapshots` is roster_cache.get_snapshot_records() — (company, DriverSnapshot)
+    pairs backing /hos. Omitted (None) everywhere that only needs the name/truck
+    roster, in which case /hos says so rather than inventing an answer.
+    """
     reply_to = str(chat["id"])
 
     def say(msg: str) -> None:
@@ -314,6 +428,58 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
 
     if not is_admin and cmd in _ADMIN_CMDS:
         say("This command is restricted to bot administrators.")
+        return True
+
+    if cmd in ("/hos", "/hours"):
+        if snapshots is None:
+            say("Live hours aren't available here yet — try again in a minute.")
+            return True
+        arg = _arg(text)
+        index = _snapshot_index(snapshots)
+
+        if arg:
+            # Roster-wide lookup: same reach as /roster, so same restriction.
+            if not is_admin:
+                say("Ask for this group's driver with a plain /hos.")
+                return True
+            hits = _roster_search(arg, candidates)
+            if not hits:
+                say(f"No driver matching “{arg}”. Try /roster {arg}")
+                return True
+            if len(hits) > 3:
+                names = "\n".join(f"  • {c.name}" for c in sorted(hits, key=lambda c: c.name)[:10])
+                say(f"“{arg}” matches {len(hits)} drivers — name one:\n{names}")
+                return True
+            wanted = [c.driver_id for c in hits]
+        else:
+            if chat.get("type") not in ("group", "supergroup"):
+                say("Which driver? Use /hos <name>  (or type /hos inside a driver's group).")
+                return True
+            wanted = registry.drivers_for_chat(str(chat["id"]))
+            if not wanted:
+                say("No driver is linked to this group yet, so I have nothing to "
+                    "report and no alerts will be posted here.\n"
+                    "Link one with:  /add <driver name>")
+                return True
+
+        # Each report runs ~400 chars; Telegram rejects a message over 4096, so
+        # cap rather than have a co-driver group get nothing at all.
+        MAX_REPORTS = 5
+        reports = []
+        for did in wanted[:MAX_REPORTS]:
+            found = index.get(did)
+            if found:
+                company, snap = found
+                reports.append(_hos_report(snap, company, registry, low_hours_thresholds))
+            else:
+                name = registry.driver_name(did) or did
+                reports.append(f"🚦 {name}\nNo live hours yet — they aren't on the "
+                               f"active roster this cycle (off duty, or not on the "
+                               f"ELD). I'll pick them up on the next poll.")
+        if len(wanted) > MAX_REPORTS:
+            reports.append(f"(+{len(wanted) - MAX_REPORTS} more linked here — "
+                           f"ask for one by name: /hos <name>)")
+        say("\n\n———————————————\n\n".join(reports))
         return True
 
     if cmd in ("/coverage", "/status"):
@@ -423,7 +589,8 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
 # Update processing
 # --------------------------------------------------------------------------- #
 def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Candidate],
-                 *, admin_user_ids, reply: bool, now: str) -> tuple | None:
+                 *, admin_user_ids, reply: bool, now: str,
+                 snapshots=None, low_hours_thresholds=None) -> tuple | None:
     """Handle a single update. Caller holds any lock and persists the offset."""
     chat = _chat_from_update(u)
     if not chat:
@@ -436,7 +603,9 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
     sender_id = (msg.get("from") or {}).get("id")
     is_admin = (not admin_user_ids) or (sender_id in admin_user_ids)
 
-    if cmd and _handle_command(cmd, text, chat, sender, registry, candidates, is_admin):
+    if cmd and _handle_command(cmd, text, chat, sender, registry, candidates, is_admin,
+                               snapshots=snapshots,
+                               low_hours_thresholds=low_hours_thresholds):
         return None
 
     if chat.get("type") not in ("group", "supergroup"):
@@ -449,15 +618,24 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
 
     registry.record_group(cid, title, now)
     result: tuple | None = None
+    frm = msg.get("from") or {}
+    human = bool(frm) and not frm.get("is_bot")
+    sname = f"{frm.get('first_name', '')} {frm.get('last_name', '')}".strip()
 
-    # (a) Safe auto-register: the title must identify EXACTLY one driver.
+    # (a) Link this group to its driver, with nobody typing a command. The
+    #     title is tried first; when it says nothing useful ("ELD", "Truck",
+    #     "Work"), whoever is writing identifies the group instead — drivers
+    #     post in their own group every day, so those link themselves too.
     if not registry.drivers_for_chat(cid):
-        did, how, reason = match_unique(title, candidates)
-        if did and not registry.is_blocked(did):
-            name = next((c.name for c in candidates if c.driver_id == did), "")
-            if registry.register(did, cid, title, how, name):
-                result = (name, cid, how, title)
-                log.info("auto-registered %s -> %s [%s]", name, cid, title)
+        m = best_match(title, candidates)
+        if m.driver_id is None and human and sname:
+            m = match_sender(sname, candidates)
+        if m.linkable and not registry.is_blocked(m.driver_id):
+            name = next((c.name for c in candidates if c.driver_id == m.driver_id), "")
+            if registry.register(m.driver_id, cid, title, m.matched_on, name):
+                result = (name, cid, m.matched_on, title)
+                log.info("auto-linked %s -> %s [%s] via %s (%s)",
+                         name, cid, title, m.matched_on, m.reason)
                 if reply:
                     sender.send_message(
                         cid,
@@ -466,13 +644,14 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
                     )
             registry.clear_pending(cid)
         else:
-            registry.add_pending(cid, title, reason, now)
-            log.info("group %s needs a human: %s (%s)", cid, title, reason)
+            lead = m.driver_id if m.confidence == "medium" else None
+            lead_name = next((c.name for c in candidates
+                              if c.driver_id == lead), "") if lead else ""
+            registry.add_pending(cid, title, m.reason, now, lead, lead_name, m.confidence)
+            log.info("group %s needs a human: %s (%s)", cid, title, m.reason)
 
     # (b) Capture the driver's Telegram @tag from their own messages.
-    frm = msg.get("from") or {}
-    if frm and not frm.get("is_bot"):
-        sname = f"{frm.get('first_name', '')} {frm.get('last_name', '')}".strip()
+    if human:
         for did in registry.drivers_for_chat(cid):
             if _name_matches(registry.driver_name(did) or "", sname):
                 if registry.set_tag(did, frm.get("username"), frm.get("id")):
@@ -484,9 +663,14 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
 
 def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
                    updates: list[dict], *, admin_user_ids=None, reply: bool = True,
-                   lock=None) -> list[tuple]:
+                   lock=None, snapshots=None, low_hours_thresholds=None) -> list[tuple]:
     guard = lock or contextlib.nullcontext()
     admin_ids = tuple(admin_user_ids or ())
+    # One row per driver, whatever the caller handed us. A driver listed twice
+    # (two company entries on one ELD account) makes every command that has to
+    # identify a person — /assign, /add, title matching — see two people with
+    # one name and refuse to pick between them.
+    candidates = unique_drivers(candidates)
     newly: list[tuple] = []
     max_id = registry.offset
     now = _now_iso()
@@ -495,7 +679,9 @@ def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
         with guard:
             try:
                 res = _process_one(u, sender, registry, candidates,
-                                   admin_user_ids=admin_ids, reply=reply, now=now)
+                                   admin_user_ids=admin_ids, reply=reply, now=now,
+                                   snapshots=snapshots,
+                                   low_hours_thresholds=low_hours_thresholds)
                 if res:
                     newly.append(res)
             except Exception:  # one bad update must not stall the offset
@@ -506,13 +692,16 @@ def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
 
 
 def process_updates(sender, registry: GroupRegistry, candidates: list[Candidate],
-                    *, admin_user_ids=None, reply: bool = True, lock=None) -> list[tuple]:
+                    *, admin_user_ids=None, reply: bool = True, lock=None,
+                    snapshots=None, low_hours_thresholds=None) -> list[tuple]:
     """One sweep over pending updates (fetch + process). Advances the offset."""
     updates = sender.get_updates(registry.offset)
     if not updates:
         return []
     return _process_batch(sender, registry, candidates, updates,
-                          admin_user_ids=admin_user_ids, reply=reply, lock=lock)
+                          admin_user_ids=admin_user_ids, reply=reply, lock=lock,
+                          snapshots=snapshots,
+                          low_hours_thresholds=low_hours_thresholds)
 
 
 # --------------------------------------------------------------------------- #
@@ -521,11 +710,15 @@ def process_updates(sender, registry: GroupRegistry, candidates: list[Candidate]
 def run_command_loop(sender, registry: GroupRegistry, roster_cache, *,
                      admin_user_ids=None, lock=None,
                      stop_event: threading.Event | None = None,
-                     poll_timeout: int = 25) -> None:
+                     poll_timeout: int = 25, low_hours_thresholds=None) -> None:
     """Long-poll Telegram and process commands/discovery until stopped.
 
     The sole getUpdates consumer while running. `roster_cache` is a
     roster_cache.RosterCache (memory-served, refreshed on its own TTL).
+
+    `low_hours_thresholds` is config.low_hours_thresholds_minutes.driver_group —
+    only so /hos can say when the next warning would fire instead of hardcoding
+    numbers that config.yaml is free to change.
     """
     stop = stop_event or threading.Event()
     if not admin_user_ids:
@@ -553,9 +746,13 @@ def run_command_loop(sender, registry: GroupRegistry, roster_cache, *,
                 stop.wait(5.0)
             continue
         try:
+            # Both reads are memory-served off the same primed cache, so /hos
+            # costs no extra DriveHOS call.
             newly = _process_batch(
                 sender, registry, roster_cache.get(), updates,
                 admin_user_ids=admin_user_ids, lock=lock,
+                snapshots=roster_cache.get_snapshot_records(),
+                low_hours_thresholds=low_hours_thresholds,
             )
             for name, chat_id, how, title in newly:
                 log.info("registered group for %s (by %s): %s [%s]", name, how, title, chat_id)

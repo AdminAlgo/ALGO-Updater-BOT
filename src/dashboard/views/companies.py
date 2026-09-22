@@ -41,6 +41,20 @@ def _drivers_for_company(runtime, company_name: str):
     return [{"driver_id": did, **rec} for did, rec in records.items() if did in driver_ids]
 
 
+def _key_already_used(config, api_key: str, *, except_name: str | None = None):
+    """The company already authenticating with this key, if any.
+
+    One API key is one ELD account. Giving it to a second company doesn't add a
+    carrier — it re-adds the same drivers under another name, and every one of
+    them then shows up twice in /roster, /assign and the Drivers page.
+    """
+    return next(
+        (c for c in config.companies
+         if c.company_key and c.company_key == api_key and c.name != except_name),
+        None,
+    )
+
+
 @bp.get("")
 @login_required
 def index():
@@ -95,6 +109,14 @@ def new():
     config = runtime.current_config()
     if any(c.name.strip().lower() == name.lower() for c in config.companies):
         flash(f"A company named {name} already exists.", "error")
+        return redirect(url_for("companies.index"))
+    clash = _key_already_used(config, api_key)
+    if clash is not None:
+        flash(f"That API key already belongs to {clash.name} — one key is one "
+              f"ELD account, so adding it again would list the same drivers "
+              f"twice and stop them being assigned to a group. If the carrier "
+              f"changed its name, rename {clash.name} instead (⋮ → Edit).",
+              "error")
         return redirect(url_for("companies.index"))
 
     try:
@@ -156,6 +178,13 @@ def key_env(name):
     company = next((c for c in config.companies if c.name == name), None)
     if company is None:
         flash(f"Company not found: {name}", "error")
+        return redirect(url_for("companies.index"))
+
+    clash = _key_already_used(config, api_key, except_name=company.name)
+    if clash is not None:
+        flash(f"That API key already belongs to {clash.name} — one key is one "
+              f"ELD account, and sharing it would list every driver on it "
+              f"twice. Use {name}'s own key.", "error")
         return redirect(url_for("companies.index"))
 
     key_env_name = company.company_key_env

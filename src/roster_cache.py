@@ -18,7 +18,7 @@ import threading
 import time
 
 from .eld import ELDError, build_provider
-from .registry import Candidate
+from .registry import Candidate, dedupe_drivers
 
 log = logging.getLogger("eld_alert_bot")
 
@@ -37,6 +37,8 @@ class RosterCache:
         # (§4.3). Kept alongside _candidates rather than replacing it: existing
         # callers (roster dropdown, /roster, title matching) only need Candidate.
         self._snapshots_by_company: dict[str, list] = {}
+        #: report lines for drivers dropped as cross-company repeats
+        self._duplicates: list[str] = []
         self._fetched_at: float = 0.0
         self._last_attempt: float = 0.0
         self._last_error: str | None = None
@@ -51,9 +53,27 @@ class RosterCache:
         ]
         with self._lock:
             self._by_company[company_name] = cands
-            self._candidates = [c for cs in self._by_company.values() for c in cs]
             self._snapshots_by_company[company_name] = list(snapshots)
+            self._reindex_locked()
             self._fetched_at = time.monotonic()
+
+    def _reindex_locked(self) -> None:
+        """Rebuild the flat roster from the per-company lists, one row per
+        DRIVER rather than one per (company, driver).
+
+        The scheduler already drops cross-company repeats before priming; this
+        repeats the rule for the self-refresh path below and for anything that
+        primes this cache directly, so no reader — /roster, /assign, /hos, the
+        Drivers page, Watchlists — can ever be handed the same driver twice."""
+        seen: dict[str, str] = {}
+        candidates: list[Candidate] = []
+        duplicates: list[str] = []
+        for company, cands in self._by_company.items():
+            kept, dupes = dedupe_drivers(cands, seen, company)
+            candidates.extend(kept)
+            duplicates.extend(dupes)
+        self._candidates = candidates
+        self._duplicates = duplicates
 
     def _refresh(self) -> None:
         config = self._config_loader()
@@ -83,11 +103,11 @@ class RosterCache:
                     )
                 )
         if candidates:
-            self._candidates = candidates
             self._by_company = {}
             for c in candidates:
                 self._by_company.setdefault(c.company or "", []).append(c)
             self._snapshots_by_company = snapshots_by_company
+            self._reindex_locked()
             self._fetched_at = time.monotonic()
         self._last_error = "; ".join(errors) or None
         if errors and not candidates:
@@ -119,9 +139,19 @@ class RosterCache:
             if stale and (now - self._last_attempt) >= self._MIN_REFETCH_GAP:
                 self._last_attempt = now
                 self._refresh()
+            # Same one-row-per-driver rule as the roster above: a snapshot is
+            # returned only under the company that owns that driver, so
+            # per-company counters and Watchlists can't double-count either.
+            owner = {c.driver_id: c.company or "" for c in self._candidates}
             return [(company, snap) for company, snaps in self._snapshots_by_company.items()
-                    for snap in snaps]
+                    for snap in snaps if owner.get(snap.driver_id, company) == company]
 
     @property
     def last_error(self) -> str | None:
         return self._last_error
+
+    @property
+    def duplicates(self) -> list[str]:
+        """Drivers held back as cross-company repeats — non-empty means two
+        company entries are pointing at one ELD account."""
+        return list(self._duplicates)

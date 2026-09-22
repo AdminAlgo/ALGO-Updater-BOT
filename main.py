@@ -102,12 +102,25 @@ def _warn_if_data_dir_ephemeral() -> None:
         )
 
 
-def _make_sender(config: Config, dry_run: bool) -> TelegramSender | None:
+def _make_sender(config: Config, dry_run: bool, allow_chats=None) -> TelegramSender | None:
     try:
-        return TelegramSender(config.secrets.telegram_bot_token, dry_run=dry_run)
+        return TelegramSender(config.secrets.telegram_bot_token, dry_run=dry_run,
+                              allow_chats=allow_chats)
     except ValueError as exc:
         print(f"Cannot start Telegram sender: {exc}", file=sys.stderr)
         return None
+
+
+def _safe_mode_allow_chats() -> list[str]:
+    """Chat ids that still receive REAL alerts while SAFE_MODE is on.
+
+    This is how a staging bot proves itself: put the ids of the groups you made
+    for it in SAFE_MODE_ALLOW_CHATS (comma-separated) and those — and only those
+    — get delivered. Every other chat, including every real driver group, stays
+    physically unreachable from this deploy.
+    """
+    raw = os.environ.get("SAFE_MODE_ALLOW_CHATS", "")
+    return [c.strip() for c in raw.replace(";", ",").split(",") if c.strip()]
 
 
 def _fmt_minutes(values: list[int]) -> str:
@@ -126,6 +139,7 @@ def _start_command_loop(config: Config, sender, registry: GroupRegistry,
         kwargs=dict(
             sender=sender, registry=registry, roster_cache=roster,
             admin_user_ids=config.admin_user_ids, lock=lock, stop_event=stop_event,
+            low_hours_thresholds=config.low_hours_thresholds_minutes.driver_group,
         ),
         daemon=True, name="command-loop",
     )
@@ -295,7 +309,8 @@ def notify(config: Config, dry_run: bool) -> int:
                        send_log_path=None if dry_run else SEND_LOG_FILE)
     print(
         f"\nCycle complete — alerts: {stats.alerts}, sent: {stats.sent}, "
-        f"failed: {stats.failed}, registered: {stats.registered}, "
+        f"failed: {stats.failed}, withheld: {stats.suppressed}, "
+        f"registered: {stats.registered}, "
         f"provider_errors: {stats.provider_errors}"
     )
     return 0 if (stats.failed == 0 and stats.provider_errors == 0 and not stats.unresolved) else 1
@@ -414,23 +429,41 @@ def run_dashboard(config: Config) -> int:
     Requires DASHBOARD_ADMIN_PASSWORD + DASHBOARD_SECRET_KEY in the environment.
 
     SAFE_MODE=1 (the staging deploy) stops *alerts* reaching drivers: the
-    scheduler evaluates every rule as usual but its sender only prints. Admin
-    commands still work for real, so /assign and group discovery are testable —
-    they only ever reply in a group somebody deliberately added this bot to.
-    That split is only safe because staging runs its own bot token; two deploys
-    sharing one token would fight over getUpdates, since the command loop is the
-    sole consumer. The bot identity is logged below — check it before pointing a
-    second deploy at a token already in use.
+    scheduler evaluates every rule as usual but its sender withholds each one.
+    Admin commands still work for real, so /assign and group discovery are
+    testable — they only ever reply in a group somebody deliberately added this
+    bot to. That split is only safe because staging runs its own bot token; two
+    deploys sharing one token would fight over getUpdates, since the command
+    loop is the sole consumer. The bot identity is logged below — check it
+    before pointing a second deploy at a token already in use.
+
+    SAFE_MODE_ALLOW_CHATS punches a deliberate hole in that wall: the listed
+    chat ids DO get real alerts, so a test bot can be watched working end to end
+    in groups made for it, while every other chat stays unreachable. Withheld
+    alerts are never marked sent and never de-duped, so nothing is lost — the
+    moment a chat is allowlisted, its pending alerts go out on the next cycle.
     """
     _setup_logging()
     _warn_if_data_dir_ephemeral()
     safe_mode = os.environ.get("SAFE_MODE", "").strip().lower() in ("1", "true", "yes")
+    allow_chats = _safe_mode_allow_chats() if safe_mode else []
     if safe_mode:
         logging.warning(
-            "SAFE_MODE is on — alerts are evaluated and logged but never sent. "
+            "SAFE_MODE is on — alerts are evaluated and logged but NOT sent. "
             "Admin commands (/assign etc.) still reply for real."
         )
-    sender = _make_sender(config, dry_run=safe_mode)
+        if allow_chats:
+            logging.warning(
+                "SAFE_MODE_ALLOW_CHATS — these %d chat(s) DO get real alerts: %s",
+                len(allow_chats), ", ".join(allow_chats),
+            )
+        else:
+            logging.warning(
+                "SAFE_MODE_ALLOW_CHATS is empty, so this deploy cannot deliver a "
+                "single alert anywhere. Put your test group's chat id there (see "
+                "/groups in the panel, or the bot's /whois) to watch it work."
+            )
+    sender = _make_sender(config, dry_run=safe_mode, allow_chats=allow_chats)
     if sender is None:
         return 1
     tok = sender.check_token()
@@ -441,8 +474,9 @@ def run_dashboard(config: Config) -> int:
     # Always say which bot this deploy is pointed at. The username is public,
     # and when staging and production print the same one it means they share a
     # token — which is what makes two command loops fight over getUpdates.
-    # In SAFE_MODE check_token() is a no-op, so probe separately for the name.
-    if safe_mode:
+    # In SAFE_MODE with no allowlist check_token() is a no-op, so probe
+    # separately for the name; with an allowlist it already did a real getMe.
+    if safe_mode and not allow_chats:
         try:
             probe = TelegramSender(config.secrets.telegram_bot_token).check_token()
             ident = probe.kind if probe.ok else f"unknown ({probe.error})"

@@ -22,6 +22,7 @@ from typing import Callable
 
 from . import send_log
 from .eld import ELDError, build_provider
+from .registry import dedupe_drivers
 from .rules import evaluate_company
 from .sender_queue import SendQueue
 
@@ -32,11 +33,24 @@ log = logging.getLogger("eld_alert_bot")
 class CycleStats:
     sent: int = 0
     failed: int = 0
+    # Alerts SAFE_MODE withheld. They are neither delivered nor lost: de-dup is
+    # not committed, so each one is re-detected and re-offered every cycle until
+    # its chat is allowlisted (SAFE_MODE_ALLOW_CHATS) or SAFE_MODE is turned off.
+    suppressed: int = 0
     alerts: int = 0
     provider_errors: int = 0
     registered: int = 0
     unresolved: list[str] = field(default_factory=list)
     queue_drain_seconds: float = 0.0
+    # Drivers polled this cycle who have no linked Telegram group. Routing is
+    # driver-group-only, so these drivers CANNOT be alerted at all — the number
+    # is surfaced here, in the cycle log and on the dashboard because an empty
+    # registry once silenced the whole fleet for a day without a single error.
+    monitored: int = 0
+    unlinked: list[str] = field(default_factory=list)
+    # Drivers a second company entry returned again this cycle (same ELD
+    # account configured twice). They are polled once, under the first company.
+    duplicates: list[str] = field(default_factory=list)
 
 
 def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
@@ -56,6 +70,12 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
 
     # 1) Fetch snapshots for every company.
     fetched = []  # list of (company, result)
+    # driver_id -> the company that already returned that driver this cycle.
+    # Two entries on one ELD account hand back the SAME drivers, and a repeat
+    # that reaches the rules is a second alert for one person, a roster where
+    # /assign sees "2 drivers", and a group title that matches nobody because
+    # it looks ambiguous. The first company in config order keeps the driver.
+    claimed_by: dict[str, str] = {}
     for company in config.companies:
         if not getattr(company, "enabled", True):
             continue  # company paused in config — no polling, no alerts
@@ -72,11 +92,38 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
             stats.unresolved.extend(result.unresolved_names)
             log.warning("%s: unresolved driver names: %s",
                         company.name, ", ".join(result.unresolved_names))
+        kept, dupes = dedupe_drivers(result.snapshots, claimed_by, company.name)
+        if dupes:
+            result.snapshots[:] = kept
+            stats.duplicates.extend(dupes)
         fetched.append((company, result))
         # Share this fetch with the command loop + dashboard so they don't each
         # hit DriveHOS on the same provider key.
         if roster_cache is not None:
             roster_cache.prime(company.name, result.snapshots)
+
+    if stats.duplicates:
+        shown = ", ".join(stats.duplicates[:10])
+        more = f" (+{len(stats.duplicates) - 10} more)" if len(stats.duplicates) > 10 else ""
+        log.warning(
+            "%d driver(s) returned by TWO companies — one ELD account is "
+            "configured twice, so only the first company polls them: %s%s",
+            len(stats.duplicates), shown, more,
+        )
+
+    # 1b) Delivery coverage. A driver with no linked group is invisible to every
+    #     rule below, so count them before evaluating rather than discovering it
+    #     from a silent day with zero sends.
+    if registry is not None:
+        roster = [(c, s) for c, result in fetched for s in result.snapshots]
+        stats.monitored = len(roster)
+        stats.unlinked = sorted(f"{s.name} ({c.name})" for c, s in roster
+                                if not registry.chat_for(s.driver_id))
+        if stats.unlinked:
+            shown = ", ".join(stats.unlinked[:10])
+            more = f" (+{len(stats.unlinked) - 10} more)" if len(stats.unlinked) > 10 else ""
+            log.warning("NO ALERTS POSSIBLE for %d of %d drivers — no linked group: %s%s",
+                        len(stats.unlinked), stats.monitored, shown, more)
 
     # 2) Group auto-discovery: match new Telegram groups to drivers.
     #    Skipped when a dedicated command loop owns Telegram polling.
@@ -116,6 +163,14 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
             alert.commit(state, now)  # de-dup only after a confirmed send
             stats.sent += 1
             log.info("sent [%s] %s -> chat %s", alert.kind, alert.driver_name, alert.chat_id)
+        elif getattr(res, "suppressed", False):
+            # No commit: a withheld alert must stay pending. Committing here is
+            # what made SAFE_MODE silently eat alerts AND report them as sent.
+            stats.suppressed += 1
+            log.warning("WITHHELD [%s] %s -> chat %s: %s — add %s to "
+                        "SAFE_MODE_ALLOW_CHATS to receive it for real",
+                        alert.kind, alert.driver_name, alert.chat_id, res.error,
+                        alert.chat_id)
         else:
             stats.failed += 1
             log.error("send FAILED [%s] %s -> chat %s: %s (will retry next cycle)",
@@ -131,12 +186,14 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
             "ts": now.isoformat(), "kind": alert.kind, "company": alert.company,
             "driver_id": alert.driver_id, "driver_name": alert.driver_name,
             "chat_id": str(alert.chat_id), "audience": alert.audience, "ok": res.ok,
+            "suppressed": bool(getattr(res, "suppressed", False)),
         })
 
     drain = queue.drain(on_result=_on_result)
     stats.queue_drain_seconds = drain.drain_seconds
-    log.info("send queue drained — detected=%d sent=%d failed=%d in %.1fs",
-             drain.detected, drain.sent, drain.failed, drain.drain_seconds)
+    log.info("send queue drained — detected=%d sent=%d failed=%d withheld=%d in %.1fs",
+             drain.detected, drain.sent, drain.failed, drain.suppressed,
+             drain.drain_seconds)
 
     state.save()
     if activity_log is not None:
@@ -203,9 +260,11 @@ def run_forever(config, sender, state, *, registry=None,
                 on_cycle(stats)
             cov = registry.coverage() if registry is not None else {"tagged": 0, "total": 0}
             log.info(
-                "cycle %d done — alerts=%d sent=%d failed=%d registered=%d "
-                "tags=%d/%d provider_errors=%d drain=%.1fs",
-                cycles, stats.alerts, stats.sent, stats.failed, stats.registered,
+                "cycle %d done — alerts=%d sent=%d failed=%d withheld=%d registered=%d "
+                "linked=%d/%d tags=%d/%d provider_errors=%d drain=%.1fs",
+                cycles, stats.alerts, stats.sent, stats.failed, stats.suppressed,
+                stats.registered,
+                stats.monitored - len(stats.unlinked), stats.monitored,
                 cov["tagged"], cov["total"], stats.provider_errors,
                 stats.queue_drain_seconds,
             )

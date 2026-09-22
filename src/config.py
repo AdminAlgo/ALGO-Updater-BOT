@@ -405,7 +405,32 @@ def _parse_companies(raw_companies: Any, problems: list[str]) -> list[Company]:
                 )
             )
 
+    _warn_shared_company_keys(companies)
     return companies
+
+
+def _warn_shared_company_keys(companies: list[Company]) -> None:
+    """Flag two enabled companies authenticating with the SAME API key.
+
+    One key is one ELD account, so both entries fetch an identical roster and
+    every driver on it is returned twice. The scheduler drops the repeats (it
+    polls each driver under the first company only), which keeps alerts
+    correct — but only one of the two names can be the carrier's real one, so
+    this says which entries collide rather than leaving a fleet listed under a
+    name nobody uses.
+    """
+    by_key: dict[str, list[str]] = {}
+    for c in companies:
+        if c.enabled and c.company_key:
+            by_key.setdefault(c.company_key, []).append(c.name)
+    for names in by_key.values():
+        if len(names) > 1:
+            log.error(
+                "%s share one API key — that is ONE ELD account, so their "
+                "drivers are the same people. Only %s polls them; remove the "
+                "other entry, or give it its own key.",
+                " and ".join(names), names[0],
+            )
 
 
 def default_config_path() -> str:

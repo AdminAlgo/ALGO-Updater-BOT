@@ -37,6 +37,46 @@ class Candidate:
     company: str | None = None
 
 
+def dedupe_drivers(rows, seen: dict[str, str], company: str) -> tuple[list, list[str]]:
+    """Keep one row per driver_id ACROSS companies; the first company wins.
+
+    Two config entries sitting on the same ELD account — a carrier added a
+    second time under a new name, or the same API key pasted into both — return
+    the SAME drivers, and every repeat then reads as a second person: /assign
+    refuses with "matches 2 drivers", best_match calls every group title
+    ambiguous so nobody gets linked, and the rules evaluate one driver twice.
+
+    `seen` maps driver_id -> the company that claimed it and is updated in
+    place, so a caller walking companies in config order carries it across the
+    whole roster. Returns (rows to keep, one report line per dropped repeat).
+    Works on anything with .driver_id and .name — Candidate or DriverSnapshot.
+    """
+    kept: list = []
+    dupes: list[str] = []
+    for row in rows:
+        owner = seen.get(row.driver_id)
+        if owner is not None:
+            dupes.append(f"{row.name} ({company} duplicates {owner})")
+            continue
+        seen[row.driver_id] = company
+        kept.append(row)
+    return kept, dupes
+
+
+def unique_drivers(rows) -> list:
+    """One row per driver_id, order preserved — for a flat roster whose rows
+    already carry their own company. Same protection as `dedupe_drivers`, for
+    callers that are handed a finished roster instead of building one."""
+    seen: set[str] = set()
+    out: list = []
+    for row in rows:
+        if row.driver_id in seen:
+            continue
+        seen.add(row.driver_id)
+        out.append(row)
+    return out
+
+
 def match_title(title: str, candidates: list[Candidate]) -> tuple[str | None, str | None]:
     """Match a group title to a driver. Returns (driver_id, matched_on) or (None, None).
 
@@ -120,6 +160,189 @@ def match_unique(title: str, candidates: list[Candidate]) -> tuple[str | None, s
     return None, None, "no confident match"
 
 
+# --------------------------------------------------------------------------- #
+# Zero-touch matching engine
+# --------------------------------------------------------------------------- #
+# Group titles in the field never look like the roster: the name order is
+# flipped ("Karimov Aziz"), a middle name is dropped ("Abib Ali Mohamed" titled
+# "Abib Mohamed"), the title is written in Cyrillic, or the name is glued to
+# punctuation ("Aziz.Karimov"). The substring test in match_unique misses every
+# one of those, which is why groups the bot could already see stayed unlinked
+# and their drivers got no alerts at all.
+#
+# Everything below compares *phonetic token keys* instead of raw substrings, so
+# all of those link themselves with nobody typing a command.
+
+_CYR2LAT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "",
+    "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    # Uzbek / Kazakh Cyrillic extras seen on driver groups
+    "ў": "o", "қ": "q", "ғ": "g", "ҳ": "h", "ә": "a", "і": "i", "ң": "n",
+    "ө": "o", "ұ": "u", "ү": "u", "һ": "h", "җ": "j", "ҷ": "j",
+}
+
+# Spellings that mean the same sound across ELD records, Telegram titles and
+# transliterated Cyrillic: Khasanov == Hasanov, Yuldashev == Iuldashev,
+# Sherzod == Serzod. Collapsing them makes the two spellings compare equal.
+_SOUND_RULES = (("kh", "h"), ("zh", "j"), ("ts", "c"), ("ch", "c"), ("sh", "s"),
+                ("yo", "io"), ("yu", "iu"), ("ya", "ia"), ("ph", "f"), ("ck", "k"))
+
+_TOKEN_SPLIT = re.compile(r"[^0-9A-Za-zЀ-ӿ]+")
+
+
+def _translit(value: str) -> str:
+    return "".join(_CYR2LAT.get(ch, ch) for ch in value)
+
+
+def token_key(token: str) -> str:
+    """Reduce one word to a spelling-insensitive key for comparison.
+
+    "Каримов" and "Karimov" collapse to the same key, so a Cyrillic group title
+    still matches a Latin roster name. Same for the transliteration variants
+    that differ only in how a sound was spelled (Khasanov / Hasanov).
+    """
+    t = _translit((token or "").lower())
+    t = re.sub(r"[^a-z0-9]", "", t)
+    if t.isdigit():
+        return t.lstrip("0") or t  # "#0118" and "118" are the same truck
+    for a, b in _SOUND_RULES:
+        t = t.replace(a, b)
+    t = t.replace("y", "i")           # Yakubov == Iakubov
+    return re.sub(r"(.)\1+", r"\1", t)  # doubled: Abbos == Abos
+
+
+def title_keys(value: str) -> set[str]:
+    """Every word of a title/name as a comparable key (order-independent)."""
+    return {k for k in (token_key(t) for t in _TOKEN_SPLIT.split(value or "")) if k}
+
+
+def _name_keys(name: str) -> set[str]:
+    """Name words long enough to identify someone (drops initials, jr, …)."""
+    return {k for k in title_keys(name) if len(k) >= 3}
+
+
+@dataclass(frozen=True)
+class GroupMatch:
+    """Who a group belongs to, and how sure we are.
+
+    confidence drives the routing decision:
+      "high"   — link automatically; HOS alerts start flowing to this group.
+      "medium" — a real lead but not proof, so it is offered in the dashboard
+                 for a one-click confirm instead of routing a driver's hours.
+      "none"   — nothing confident; reason says what stopped it.
+    """
+    driver_id: str | None
+    matched_on: str
+    confidence: str
+    reason: str
+
+    @property
+    def linkable(self) -> bool:
+        return self.driver_id is not None and self.confidence == "high"
+
+
+def best_match(title: str, candidates: list[Candidate]) -> GroupMatch:
+    """Identify the one driver a group title belongs to.
+
+    Ambiguity always loses: if a title fits two drivers, nobody is linked and
+    the reason records why — misrouting one driver's HOS alerts to another is
+    worse than a group staying unlinked for another day.
+    """
+    tkeys = title_keys(title)
+    if not tkeys:
+        return GroupMatch(None, "", "none", "empty title")
+
+    digits = {k for k in tkeys if k.isdigit()}
+    freq: dict[str, int] = {}
+    for c in candidates:
+        for k in _name_keys(c.name):
+            freq[k] = freq.get(k, 0) + 1
+
+    scored = []
+    for c in candidates:
+        hits = _name_keys(c.name) & tkeys
+        truck = bool(c.truck) and token_key(str(c.truck)) in digits
+        scored.append((c, len(hits), truck, hits))
+
+    def _names(rows) -> str:
+        return ", ".join(sorted(r[0].name for r in rows))
+
+    # Tier 1 — two or more name words match, in any order. Covers a flipped
+    # name, a dropped middle name, Cyrillic and punctuation all at once.
+    tier = [s for s in scored if s[1] >= 2]
+    if tier:
+        top = max(s[1] for s in tier)
+        best = [s for s in tier if s[1] == top]
+        if len(best) > 1:
+            with_truck = [s for s in best if s[2]]
+            if len(with_truck) == 1:  # the truck number breaks the tie
+                best = with_truck
+        if len(best) == 1:
+            return GroupMatch(best[0][0].driver_id, "name", "high",
+                              f"{top} name words match")
+        return GroupMatch(None, "", "none",
+                          f"ambiguous — title names {len(best)} drivers ({_names(best)})")
+
+    # Tier 2 — one name word plus the truck number.
+    tier = [s for s in scored if s[1] == 1 and s[2]]
+    if len(tier) == 1:
+        return GroupMatch(tier[0][0].driver_id, "name+truck", "high",
+                          "name word + truck number")
+    if len(tier) > 1:
+        return GroupMatch(None, "", "none",
+                          f"ambiguous — name + truck fits {len(tier)} drivers ({_names(tier)})")
+
+    # Tier 3 — the truck number on its own.
+    tier = [s for s in scored if s[2]]
+    if len(tier) == 1:
+        return GroupMatch(tier[0][0].driver_id, "truck", "high", "unique truck number")
+    if len(tier) > 1:
+        return GroupMatch(None, "", "none",
+                          f"ambiguous — truck number matches {len(tier)} drivers")
+
+    # Tier 4 — the driver's Telegram username in the title.
+    tier = [s for s in scored if s[0].username and token_key(s[0].username) in tkeys]
+    if len(tier) == 1:
+        return GroupMatch(tier[0][0].driver_id, "username", "high", "unique username")
+
+    # Tier 5 — a single name word that belongs to exactly one driver in the
+    # whole fleet. A good lead, but one word is not proof of identity.
+    tier = [s for s in scored
+            if s[1] == 1 and all(freq.get(k, 0) == 1 and len(k) >= 4 for k in s[3])]
+    if len(tier) == 1:
+        word = sorted(tier[0][3])[0]
+        return GroupMatch(tier[0][0].driver_id, "name", "medium",
+                          f"only the name word {word} matches — confirm it")
+
+    return GroupMatch(None, "", "none", "no confident match")
+
+
+def match_sender(sender_name: str, candidates: list[Candidate]) -> GroupMatch:
+    """Identify the roster driver who just wrote, from their Telegram name.
+
+    This is what links groups whose title says nothing useful ("ELD", "Truck",
+    "Work") — the driver writing in their own group identifies it for us. Two
+    matching name words are required, so a one-word Telegram handle can never
+    claim a group.
+    """
+    skeys = title_keys(sender_name)
+    if len(skeys) < 2:
+        return GroupMatch(None, "", "none", "sender name too short to be sure")
+    rows = [(c, len(_name_keys(c.name) & skeys)) for c in candidates]
+    rows = [r for r in rows if r[1] >= 2]
+    if not rows:
+        return GroupMatch(None, "", "none", "sender is not on the roster")
+    top = max(n for _, n in rows)
+    winners = [c for c, n in rows if n == top]
+    if len(winners) == 1:
+        return GroupMatch(winners[0].driver_id, "sender", "high",
+                          "the driver wrote in this group")
+    return GroupMatch(None, "", "none", "sender name fits more than one driver")
+
+
 class GroupRegistry:
     def __init__(self, path: str | Path | None = None) -> None:
         self._path = Path(path) if path else None
@@ -191,10 +414,38 @@ class GroupRegistry:
         self._pending.pop(cid, None)
 
     # --- pending (needs-a-human) queue --- #
-    def add_pending(self, chat_id, title: str, reason: str, when: str) -> None:
+    def add_pending(self, chat_id, title: str, reason: str, when: str,
+                    suggested_id: str | None = None, suggested_name: str = "",
+                    confidence: str = "none") -> None:
+        """Queue a group nobody could be linked to, with its best lead if any.
+
+        ``suggested_id`` carries a medium-confidence match — good enough to show
+        in the dashboard for a one-click confirm, not good enough to route a
+        driver's HOS alerts on by itself.
+        """
         if self.driver_for_chat(chat_id) or self.drivers_for_chat(chat_id):
             return  # already assigned — nothing pending
-        self._pending[str(chat_id)] = {"title": title or "", "reason": reason, "seen": when}
+        self._pending[str(chat_id)] = {
+            "title": title or "", "reason": reason, "seen": when,
+            "suggested_id": suggested_id, "suggested_name": suggested_name,
+            "confidence": confidence,
+        }
+
+    def suggestions(self) -> list[dict]:
+        """Unlinked groups that have a driver suggested — the "Link all" list.
+
+        Skips a suggestion whose driver is already linked to another group or
+        was explicitly removed, so one click can never steal a working link.
+        """
+        out: list[dict] = []
+        for cid, rec in list(self._pending.items()):
+            did = rec.get("suggested_id")
+            if not did or self.is_blocked(did) or self.is_registered(did):
+                continue
+            out.append({"chat_id": cid, "title": rec.get("title") or "",
+                        "driver_id": did, "driver_name": rec.get("suggested_name") or did,
+                        "reason": rec.get("reason", "")})
+        return out
 
     def clear_pending(self, chat_id) -> None:
         self._pending.pop(str(chat_id), None)
@@ -210,7 +461,10 @@ class GroupRegistry:
                 continue
             p = self._pending.get(cid) or {}
             out.append({"chat_id": cid, "title": rec.get("title") or "",
-                        "reason": p.get("reason", "not matched yet")})
+                        "reason": p.get("reason", "not matched yet"),
+                        "suggested_id": p.get("suggested_id"),
+                        "suggested_name": p.get("suggested_name") or "",
+                        "confidence": p.get("confidence", "none")})
         return out
 
     # --- offset (Telegram update ack) --- #

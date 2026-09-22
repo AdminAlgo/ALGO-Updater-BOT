@@ -17,17 +17,47 @@ environment and redeploy to restrict admin commands.</p>
     <li>Alerts evaluated: {{ stats.alerts }}</li>
     <li>Sent: {{ stats.sent }}</li>
     <li>Failed: {{ stats.failed }}</li>
+    {% if stats.suppressed %}
+    <li>Withheld by SAFE_MODE: {{ stats.suppressed }}</li>
+    {% endif %}
     <li>Newly registered groups: {{ stats.registered }}</li>
     <li>Provider errors: {{ stats.provider_errors }}</li>
     {% if stats.unresolved %}<li>Unresolved drivers: {{ stats.unresolved|join(', ') }}</li>{% endif %}
   </ul>
+  {% if stats.suppressed %}
+  <p class="flash-error">⚠ SAFE_MODE is on: {{ stats.suppressed }} alert(s) were
+  evaluated but NOT delivered. They are not lost — nothing was marked sent and
+  no de-dup was recorded, so each one goes out on the next cycle once its chat
+  is listed in <code>SAFE_MODE_ALLOW_CHATS</code> (or SAFE_MODE is turned off).</p>
+  {% endif %}
   {% else %}
   <p>No cycle has completed yet.</p>
   {% endif %}
 </section>
 
 <section>
-  <h2>Driver group coverage</h2>
+  <h2>Delivery coverage</h2>
+  {% if stats and stats.monitored %}
+  <p>{{ stats.monitored - stats.unlinked|length }} / {{ stats.monitored }}
+     drivers are linked to a group.</p>
+    {% if stats.unlinked %}
+    <p class="flash-error">⚠ {{ stats.unlinked|length }} driver(s) cannot receive any
+    alert — no linked group. <a href="{{ url_for('groups.index') }}">Link their groups →</a></p>
+    {% endif %}
+    {% if stats.duplicates %}
+    <p class="flash-error">⚠ {{ stats.duplicates|length }} driver(s) are returned by two
+    companies — one ELD account is configured twice, so they are polled under the first
+    company only: {{ stats.duplicates[:5]|join(', ') }}{% if stats.duplicates|length > 5 %},
+    +{{ stats.duplicates|length - 5 }} more{% endif %}.
+    <a href="{{ url_for('companies.index') }}">Fix the duplicate company →</a></p>
+    {% endif %}
+  {% else %}
+  <p class="text-muted">No cycle has reported coverage yet.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Driver tag coverage</h2>
   <p>{{ coverage.tagged }} / {{ coverage.total }} drivers tagged
      ({{ coverage.by_username }} by @username, {{ coverage.by_id }} by id)</p>
 </section>

@@ -33,6 +33,10 @@ class DrainStats:
     detected: int = 0
     sent: int = 0
     failed: int = 0
+    # Withheld by SAFE_MODE. Counted apart from `failed` because nothing went
+    # wrong and retrying changes nothing — but apart from `sent` too, because
+    # the driver got nothing.
+    suppressed: int = 0
     drain_seconds: float = 0.0
 
 
@@ -124,7 +128,10 @@ class SendQueue:
                 extra_result = self._sender.send_alert(replace(alert, chat_id=extra))
                 last_sent = time.monotonic()
                 self._chat_sent_at[str(extra)].append(last_sent)
-                if not extra_result.ok:
+                if extra_result.suppressed:
+                    log.info("dispatch fan-out withheld [%s] %s -> chat %s: %s",
+                             alert.kind, alert.driver_name, extra, extra_result.error)
+                elif not extra_result.ok:
                     log.error("dispatch fan-out send FAILED [%s] %s -> chat %s: %s",
                              alert.kind, alert.driver_name, extra, extra_result.error)
 
@@ -134,6 +141,11 @@ class SendQueue:
                 stats.sent += 1
                 if alert.dedupe_key:
                     self._sent_keys.add(alert.dedupe_key)
+            elif result.suppressed:
+                # Deliberately NOT added to _sent_keys: nothing was delivered,
+                # so the next cycle must be free to try this alert again (it
+                # will, the moment the chat is allowlisted or SAFE_MODE is off).
+                stats.suppressed += 1
             else:
                 stats.failed += 1
             if on_result is not None:

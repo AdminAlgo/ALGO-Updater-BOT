@@ -3,14 +3,20 @@
 Posts alert text to Telegram chats via the Bot API `sendMessage` method, using
 TELEGRAM_BOT_TOKEN. Stdlib only (urllib) — no extra dependencies.
 
-Two modes:
-  - live:     real HTTP POST to api.telegram.org.
-  - dry_run:  prints what WOULD be sent and returns a simulated success, so the
-              whole pipeline can be exercised before the bot is in the groups
-              (or before real chat IDs exist).
+Three modes:
+  - live:       real HTTP POST to api.telegram.org.
+  - dry_run:    prints what WOULD be sent and reports the send as SUPPRESSED —
+                never as a success, because a caller that believes a suppressed
+                alert was delivered commits its de-dup state and the alert is
+                then never sent for real (that is what silenced staging).
+  - dry_run + allow_chats:  the staging split. Chats in `allow_chats` get REAL
+                messages; every other chat is suppressed as above. This is what
+                lets a test bot prove itself end-to-end in groups you created
+                for it, while it stays physically unable to message a driver.
 
-A placeholder/empty bot token is rejected in live mode with a clear message, so
-nobody accidentally "sends" against a fake token.
+A placeholder/empty bot token is rejected whenever a real send is possible
+(live, or dry_run with a non-empty allow_chats), so nobody accidentally "sends"
+against a fake token.
 """
 
 from __future__ import annotations
@@ -35,6 +41,10 @@ class SendResult:
     kind: str = ""
     error: str | None = None
     retry_after: int | None = None  # seconds Telegram told us to wait (429 only)
+    # True when SAFE_MODE deliberately withheld this message. Distinct from both
+    # ok (nothing was delivered) and a plain failure (nothing is wrong, and
+    # retrying will not help). Callers MUST NOT commit de-dup state for these.
+    suppressed: bool = False
 
 
 def _looks_like_placeholder(token: str) -> bool:
@@ -64,16 +74,40 @@ class TelegramSender:
         dry_run: bool = False,
         timeout: float = 15.0,
         inter_message_delay: float = 0.05,
+        allow_chats=None,
     ) -> None:
+        """`allow_chats` only means anything under dry_run: those chat ids (and
+        only those) still receive real messages. It is the staging escape hatch
+        — see the module docstring."""
         self._token = bot_token
         self.dry_run = dry_run
         self._timeout = timeout
         self._delay = inter_message_delay
-        if not dry_run and _looks_like_placeholder(bot_token):
+        self.allow_chats = frozenset(
+            str(c).strip() for c in (allow_chats or ()) if str(c).strip()
+        )
+        # A real send is possible unless we are suppressing every single chat,
+        # so that is exactly when a fake token has to be refused.
+        if (not dry_run or self.allow_chats) and _looks_like_placeholder(bot_token):
             raise ValueError(
                 "TELEGRAM_BOT_TOKEN looks like a placeholder. Set a real token in "
                 ".env, or run in dry-run mode to preview without sending."
             )
+
+    # ------------------------------------------------------------------ #
+    def _suppressed(self, chat_id) -> bool:
+        """True when SAFE_MODE must withhold this chat's message."""
+        return self.dry_run and str(chat_id) not in self.allow_chats
+
+    def _suppress_result(self, chat_id, kind: str, what: str) -> SendResult:
+        # Wording stays mode-neutral: this same path serves `--notify --dry-run`
+        # previews, where naming SAFE_MODE would be simply wrong.
+        reason = ("withheld: chat is not in the allow list"
+                  if self.allow_chats else "withheld: sending is disabled")
+        print(f"  [NOT SENT] → chat {chat_id}"
+              + (f" [{kind}]" if kind else "") + (f" {what}" if what else ""))
+        return SendResult(ok=False, chat_id=chat_id, kind=kind, error=reason,
+                          suppressed=True)
 
     # ------------------------------------------------------------------ #
     def _post(self, method: str, payload: dict, read_timeout: float | None = None) -> dict:
@@ -87,12 +121,13 @@ class TelegramSender:
 
     def send_message(self, chat_id: str, text: str, kind: str = "",
                      entities: list | None = None) -> SendResult:
-        """Send one message. In dry-run, print and simulate success."""
-        if self.dry_run:
-            print(f"  [DRY-RUN] → chat {chat_id}" + (f" [{kind}]" if kind else ""))
+        """Send one message. Suppressed chats are printed, never delivered, and
+        reported with ok=False + suppressed=True."""
+        if self._suppressed(chat_id):
+            res = self._suppress_result(chat_id, kind, "")
             for ln in text.splitlines():
                 print(f"           {ln}")
-            return SendResult(ok=True, chat_id=chat_id, kind=kind)
+            return res
 
         payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
         if entities:
@@ -137,12 +172,11 @@ class TelegramSender:
     def send_photo(self, chat_id: str, image_bytes: bytes, caption: str,
                    kind: str = "", caption_entities: list | None = None) -> SendResult:
         """Send a photo with a caption (caption max 1024 chars)."""
-        if self.dry_run:
-            print(f"  [DRY-RUN] → chat {chat_id} [PHOTO {len(image_bytes)}B]"
-                  + (f" [{kind}]" if kind else ""))
+        if self._suppressed(chat_id):
+            res = self._suppress_result(chat_id, kind, f"[PHOTO {len(image_bytes)}B]")
             for ln in caption.splitlines():
                 print(f"           {ln}")
-            return SendResult(ok=True, chat_id=chat_id, kind=kind)
+            return res
 
         fields = {"chat_id": chat_id, "caption": caption[:1024]}
         if caption_entities:
@@ -230,8 +264,13 @@ class TelegramSender:
 
     # ------------------------------------------------------------------ #
     def check_token(self) -> SendResult:
-        """Verify the token via getMe (no-op in dry-run)."""
-        if self.dry_run:
+        """Verify the token via getMe.
+
+        Skipped only when nothing can ever be sent (dry-run with no allowlist) —
+        with an allowlist the token is about to be used for real, so a bad one
+        must fail at boot rather than at the first alert.
+        """
+        if self.dry_run and not self.allow_chats:
             return SendResult(ok=True, chat_id="-", kind="getMe")
         try:
             body = self._post("getMe", {})

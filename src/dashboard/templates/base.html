@@ -16,6 +16,7 @@
       <a href="{{ url_for('watchlists.index') }}" class="{{ 'active' if request.blueprint == 'watchlists' else '' }}">Watchlists</a>
       <a href="{{ url_for('companies.index') }}" class="{{ 'active' if request.blueprint == 'companies' else '' }}">Companies</a>
       <a href="{{ url_for('drivers.index') }}" class="{{ 'active' if request.blueprint == 'drivers' else '' }}">Drivers</a>
+      <a href="{{ url_for('groups.index') }}" class="{{ 'active' if request.blueprint == 'groups' else '' }}">Groups</a>
       <a href="{{ url_for('warnings.index') }}" class="{{ 'active' if request.blueprint == 'warnings' else '' }}">Warnings</a>
       <a href="{{ url_for('stats.index') }}" class="{{ 'active' if request.blueprint == 'stats' else '' }}">Statistics</a>
     </nav>

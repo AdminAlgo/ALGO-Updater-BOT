@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Groups — ALGO Updater{% endblock %}
+{% block content %}
+<h1>Groups</h1>
+
+{% if storage_warning %}
+<p class="flash-error">⚠ {{ storage_warning }}</p>
+{% endif %}
+
+{% for err in roster_errors %}
+<p class="flash-error">⚠ {{ err }}</p>
+{% endfor %}
+
+<section>
+  <h2>Delivery coverage</h2>
+  <p>
+    <strong>{{ linked }} / {{ total_drivers }}</strong> drivers are linked to a group.
+    {% if unlinked_drivers %}
+    <span class="text-red">{{ unlinked_drivers|length }} driver(s) cannot receive any alert
+    until their group is linked.</span>
+    {% else %}
+    Everyone on the roster can be reached.
+    {% endif %}
+  </p>
+</section>
+
+<section>
+  <h2>Unlinked groups ({{ rows|length }})</h2>
+  <p class="text-muted">
+    The bot links a group by itself as soon as its title or a driver writing in it
+    identifies exactly one person. These are the ones it would not guess at on its
+    own — {{ suggested|length }} have a match good enough to accept in one click.
+  </p>
+
+  {% if suggested %}
+  <form method="post" action="{{ url_for('groups.link_all') }}" class="bulk-form">
+    <input type="hidden" name="confidence" value="high">
+    <input type="hidden" name="confidence" value="medium">
+    <button type="submit" class="btn">Link all {{ suggested|length }} suggested groups</button>
+  </form>
+  {% endif %}
+
+  <table>
+    <thead>
+      <tr><th>Group</th><th>Chat id</th><th>Suggested driver</th><th>Why</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.title }}</td>
+        <td class="text-muted">{{ r.chat_id }}</td>
+        <td>
+          {% if r.driver_id %}
+            {{ r.driver_name }}
+            <span class="text-muted">{{ r.company }}</span>
+          {% else %}
+            <span class="text-muted">—</span>
+          {% endif %}
+        </td>
+        <td class="{{ 'text-amber' if r.confidence == 'medium' else ('text-muted' if r.confidence == 'none' else '') }}">
+          {{ r.reason }}
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('groups.link') }}" class="row-form">
+            <input type="hidden" name="chat_id" value="{{ r.chat_id }}">
+            {% if r.driver_id %}
+              <input type="hidden" name="driver_id" value="{{ r.driver_id }}">
+              <button type="submit" class="btn btn-secondary">Link</button>
+            {% else %}
+              <select name="driver_id" required>
+                <option value="">Pick a driver…</option>
+                {% for c in unlinked_drivers %}
+                <option value="{{ c.driver_id }}">{{ c.name }} — {{ c.company }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="btn btn-secondary">Link</button>
+            {% endif %}
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="text-muted">
+        Every group the bot can see is linked to a driver.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Drivers with no group ({{ unlinked_drivers|length }})</h2>
+  <p class="text-muted">
+    These drivers are polled every cycle but have nowhere to post. If their group
+    exists, the bot links it the moment anyone writes in it; if the bot was never
+    added to it, add the bot and it links itself.
+  </p>
+  <table>
+    <thead><tr><th>Driver</th><th>Company</th><th>Truck</th></tr></thead>
+    <tbody>
+      {% for c in unlinked_drivers %}
+      <tr><td>{{ c.name }}</td><td>{{ c.company }}</td><td>{{ c.truck or '—' }}</td></tr>
+      {% else %}
+      <tr><td colspan="3" class="text-muted">Every driver has a group.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
