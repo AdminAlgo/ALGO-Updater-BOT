@@ -161,5 +161,52 @@ class LoadConfigTests(unittest.TestCase):
             self.assertIsNone(config.secrets.leader_api_key)
 
 
+class ConfigPathTests(unittest.TestCase):
+    """The panel writes new companies back to this file. Point it at the
+    container and every company added through the panel dies on redeploy."""
+
+    @contextlib.contextmanager
+    def _env(self, **values):
+        saved = {k: os.environ.get(k) for k in ("CONFIG_PATH", "DATA_DIR")}
+        try:
+            for k in saved:
+                os.environ.pop(k, None)
+            os.environ.update({k: v for k, v in values.items() if v is not None})
+            yield
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_config_path_wins(self):
+        from src.config import default_config_path
+
+        with self._env(CONFIG_PATH="/data/config.yaml", DATA_DIR="/elsewhere"):
+            self.assertEqual(default_config_path(), "/data/config.yaml")
+
+    def test_a_mounted_data_dir_is_used_when_config_path_is_forgotten(self):
+        from src.config import default_config_path
+
+        with tempfile.TemporaryDirectory() as d, self._env(DATA_DIR=d):
+            self.assertEqual(default_config_path(), os.path.join(d, "config.yaml"))
+
+    def test_local_runs_still_use_the_repo_copy(self):
+        from src.config import default_config_path
+
+        with self._env(DATA_DIR="."):
+            self.assertEqual(default_config_path(), "config.yaml")
+        with self._env():
+            self.assertEqual(default_config_path(), "config.yaml")
+
+    def test_an_unmounted_volume_path_is_not_invented(self):
+        """DATA_DIR naming a directory that doesn't exist means the volume is
+        missing; writing config there would hide the real problem."""
+        from src.config import default_config_path
+
+        with self._env(DATA_DIR="/no/such/volume/here"):
+            self.assertEqual(default_config_path(), "config.yaml")
+
+
 if __name__ == "__main__":
     unittest.main()

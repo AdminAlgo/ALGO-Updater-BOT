@@ -473,8 +473,22 @@ def default_config_path() -> str:
     Companies added through the admin panel are written back to this file, so on
     a host with an ephemeral filesystem it has to point at a mounted volume or
     every panel-added company is lost on the next deploy.
+
+    Forgetting CONFIG_PATH is silent and expensive: the panel reports the
+    company added, it polls happily, and the next deploy rolls the file back to
+    the repo's copy — carrier gone, drivers gone, nobody told. So when
+    CONFIG_PATH is unset but DATA_DIR points at a real directory (the mounted
+    volume that already holds the registry and the stored API keys), the config
+    is kept there too. Local runs, where DATA_DIR is "." or unset, are
+    unaffected and keep using the repo's file.
     """
-    return (os.environ.get("CONFIG_PATH") or "").strip() or "config.yaml"
+    explicit = (os.environ.get("CONFIG_PATH") or "").strip()
+    if explicit:
+        return explicit
+    data_dir = (os.environ.get("DATA_DIR") or "").strip()
+    if data_dir and os.path.isabs(data_dir) and os.path.isdir(data_dir):
+        return os.path.join(data_dir, "config.yaml")
+    return "config.yaml"
 
 
 def load_config(
