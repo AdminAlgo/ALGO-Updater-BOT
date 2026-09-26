@@ -687,10 +687,18 @@ def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
     # pick between them. unique_drivers folds the repeated id; merge_people
     # folds the second id belonging to the same human, preferring whichever one
     # is already linked so the choice doesn't move around.
-    candidates, merged = merge_people(unique_drivers(candidates),
-                                      prefer=lambda did: registry.chat_for(did) is not None)
-    for line in merged:
-        log.info("roster: %s", line)
+    # Nothing here may raise: this runs BEFORE the per-update loop that advances
+    # the Telegram offset, so a throw would re-fail on the same batch forever
+    # and the bot would answer nothing, with one log line to show for it.
+    try:
+        candidates, merged = merge_people(
+            unique_drivers(candidates),
+            prefer=lambda did: registry.chat_for(did) is not None)
+        for line in merged:
+            log.info("roster: %s", line)
+    except Exception:
+        log.exception("roster merge failed — answering commands on the raw roster")
+        candidates = unique_drivers(candidates)
     newly: list[tuple] = []
     max_id = registry.offset
     now = _now_iso()

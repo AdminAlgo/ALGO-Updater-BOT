@@ -22,6 +22,7 @@ against a fake token.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.parse
@@ -29,6 +30,8 @@ import urllib.request
 from dataclasses import dataclass
 
 TELEGRAM_API = "https://api.telegram.org"
+
+log = logging.getLogger("eld_alert_bot")
 
 # Tokens that obviously aren't real — refuse to "send" with these in live mode.
 _PLACEHOLDER_HINTS = ("placeholder", "your-telegram-bot-token", "123456789:")
@@ -233,9 +236,33 @@ class TelegramSender:
         read_timeout = (timeout + self._timeout) if timeout else self._timeout
         try:
             body = self._post("getUpdates", payload, read_timeout=read_timeout)
-        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace") if hasattr(exc, "read") else ""
+            if exc.code == 409:
+                # Telegram allows ONE getUpdates consumer per token. A second
+                # one — an old deploy still running, a staging service on the
+                # same token, a laptop copy — takes turns stealing updates, and
+                # the bot answers some commands and ignores others at random.
+                # This used to return [] in silence, which is undiagnosable.
+                log.error(
+                    "=" * 70 + "\n"
+                    "  Telegram 409 CONFLICT on getUpdates: another process is\n"
+                    "  polling this SAME bot token. Commands will be answered\n"
+                    "  erratically or not at all until only one copy is running.\n"
+                    "  Check for a second Railway service, an older deployment\n"
+                    "  that never stopped, or a local run of the bot.\n"
+                    "  Telegram said: %s\n" + "=" * 70, raw[:300],
+                )
+            else:
+                log.warning("getUpdates failed: HTTP %s %s", exc.code, raw[:200])
             return []
-        return body.get("result", []) if body.get("ok") else []
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+            log.warning("getUpdates failed: %s", exc)
+            return []
+        if not body.get("ok"):
+            log.warning("getUpdates refused: %s", body.get("description"))
+            return []
+        return body.get("result", [])
 
     def send_alert(self, alert) -> SendResult:
         """Deliver a rules.Alert to its target chat (photo if it carries one).
