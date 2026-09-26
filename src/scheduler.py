@@ -22,7 +22,7 @@ from typing import Callable
 
 from . import send_log
 from .eld import ELDError, build_provider
-from .registry import dedupe_drivers
+from .registry import dedupe_drivers, merge_people
 from .rules import evaluate_company
 from .sender_queue import SendQueue
 
@@ -102,12 +102,30 @@ def run_cycle(config, sender, state, now: datetime | None = None, registry=None,
         if roster_cache is not None:
             roster_cache.prime(company.name, result.snapshots)
 
+    # 1a) The other shape of "one driver, two rows": not one id returned by two
+    #     companies (handled above), but one PERSON the ELD holds under two
+    #     different ids. Both carry real hours, so without this the driver gets
+    #     every alert twice, and half of them are computed against the record
+    #     nobody linked to a group — which is a send to nowhere. Runs across all
+    #     companies at once because the twin can sit in either one. The id that
+    #     already has a group wins, so the choice doesn't move between cycles.
+    if fetched:
+        linked = (lambda did: registry.chat_for(did) is not None) if registry else None
+        keep, merged = merge_people([s for _, result in fetched for s in result.snapshots],
+                                    prefer=linked)
+        if merged:
+            keep_ids = {s.driver_id for s in keep}
+            for _company, result in fetched:
+                result.snapshots[:] = [s for s in result.snapshots if s.driver_id in keep_ids]
+            stats.duplicates.extend(merged)
+
     if stats.duplicates:
         shown = ", ".join(stats.duplicates[:10])
         more = f" (+{len(stats.duplicates) - 10} more)" if len(stats.duplicates) > 10 else ""
         log.warning(
-            "%d driver(s) returned by TWO companies — one ELD account is "
-            "configured twice, so only the first company polls them: %s%s",
+            "%d driver row(s) folded as repeats of a driver already on the "
+            "roster — one ELD account configured as two companies, or one "
+            "person holding two ELD records: %s%s",
             len(stats.duplicates), shown, more,
         )
 

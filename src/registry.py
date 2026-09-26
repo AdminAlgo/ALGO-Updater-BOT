@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .eld.base import normalize_name
@@ -29,12 +29,23 @@ log = logging.getLogger("eld_alert_bot")
 
 @dataclass(frozen=True)
 class Candidate:
-    """A driver the discovery step can match a group title against."""
+    """A driver the discovery step can match a group title against.
+
+    ``aliases`` holds the OTHER ELD driver ids belonging to this same person —
+    see `merge_people`. Registering a driver must cover the aliases too, or the
+    day the ELD reports them under the other record their alerts route nowhere.
+    """
     driver_id: str
     name: str
     username: str | None = None
     truck: str | None = None
     company: str | None = None
+    aliases: tuple[str, ...] = ()
+
+    @property
+    def all_ids(self) -> tuple[str, ...]:
+        """Every ELD id this person answers to, primary first."""
+        return (self.driver_id, *self.aliases)
 
 
 def dedupe_drivers(rows, seen: dict[str, str], company: str) -> tuple[list, list[str]]:
@@ -75,6 +86,85 @@ def unique_drivers(rows) -> list:
         seen.add(row.driver_id)
         out.append(row)
     return out
+
+
+def _row_truck(row) -> str | None:
+    """Truck number off a Candidate (.truck) or a DriverSnapshot (.connection)."""
+    truck = getattr(row, "truck", None)
+    if truck is None:
+        conn = getattr(row, "connection", None)
+        truck = getattr(conn, "vehicle_number", None) if conn is not None else None
+    return truck
+
+
+def person_key(name: str | None, truck: str | None) -> str | None:
+    """Identity of the HUMAN behind a roster row, or None if it can't be told.
+
+    Name AND truck must both be present and both must match for two rows to be
+    one person. Name alone is not enough — two carriers really do each employ an
+    "AZIZ KARIMOV", and merging them would post one driver's hours into the
+    other's group.
+    """
+    n = normalize_name(name or "")
+    t = re.sub(r"[^a-z0-9]+", "", str(truck or "").lower())
+    if not n or not t:
+        return None
+    return f"{n}|{t}"
+
+
+def merge_people(rows, *, prefer=None) -> tuple[list, list[str]]:
+    """Collapse rows that are ONE person holding TWO ELD driver records.
+
+    `dedupe_drivers` catches the same driver_id arriving twice (one ELD account
+    configured as two companies). This catches the other shape, which it cannot
+    see: the ELD itself holds two ACTIVE records for one driver — re-hired, or
+    re-created after a device swap — so the same human comes back under two
+    different ids. Nothing downstream could tell them apart, and the damage was
+    total: /assign answered "matches 2 drivers — name one exactly" and then
+    listed the SAME name and truck twice, so no answer existed and the driver
+    could never be linked; auto-linking called their group title ambiguous; and
+    once linked, half the alerts were computed against the unregistered record
+    and went nowhere.
+
+    Merging is by (name, truck) — see `person_key`. The survivor keeps the other
+    ids in `.aliases` (Candidate) so registration can cover all of them.
+    `prefer` is called with a driver_id and returns True for the id that must
+    win — pass "is already linked to a group" so the survivor stays stable from
+    one cycle to the next. Returns (kept rows in order, one line per merge).
+    """
+    order: list[tuple[str | None, object]] = []
+    groups: dict[str, list] = {}
+    for row in rows:
+        key = person_key(getattr(row, "name", None), _row_truck(row))
+        if key is None:
+            order.append((None, row))
+            continue
+        if key not in groups:
+            groups[key] = []
+            order.append((key, None))
+        groups[key].append(row)
+
+    kept: list = []
+    merged: list[str] = []
+    for key, row in order:
+        if key is None:
+            kept.append(row)
+            continue
+        members = groups[key]
+        if len(members) == 1:
+            kept.append(members[0])
+            continue
+        lead = next((m for m in members if prefer and prefer(m.driver_id)), members[0])
+        extra = [m.driver_id for m in members if m.driver_id != lead.driver_id]
+        if hasattr(lead, "aliases"):
+            lead = replace(lead, aliases=tuple(dict.fromkeys((*lead.aliases, *extra))))
+        kept.append(lead)
+        merged.append(
+            f"{lead.name} (truck {_row_truck(lead)}) — one driver with "
+            f"{len(members)} ELD records: keeping {lead.driver_id}, "
+            f"also {', '.join(extra)}"
+        )
+    return kept, merged
 
 
 def match_title(title: str, candidates: list[Candidate]) -> tuple[str | None, str | None]:
@@ -516,6 +606,22 @@ class GroupRegistry:
             "disabled_kinds": list(prev.get("disabled_kinds") or []),
             "paused": bool(prev.get("paused", False)),
         }
+        return changed
+
+    def register_person(self, candidate: "Candidate", chat_id: str, title: str,
+                        matched_on: str) -> bool:
+        """Register a driver AND every other ELD record of the same person.
+
+        A driver the ELD holds twice (see `merge_people`) is one human with one
+        group, so both ids point at that group: whichever record the ELD reports
+        them under on a given cycle, the alert still lands in their group.
+        Returns True if anything was newly added or moved.
+        """
+        changed = False
+        for did in candidate.all_ids:
+            self.unblock(did)
+            if self.register(did, chat_id, title, matched_on, candidate.name):
+                changed = True
         return changed
 
     # --- dashboard-managed per-driver settings (upgrade spec §3.1) --------- #

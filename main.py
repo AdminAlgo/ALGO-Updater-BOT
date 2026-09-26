@@ -203,6 +203,62 @@ def print_summary(config: Config) -> None:
     print(line)
 
 
+def check_keys(config: Config) -> int:
+    """Where every company's API key comes from — the Railway variable checklist.
+
+    A company with no key is disabled at load and simply stops being polled: no
+    crash, no alert, nothing in Telegram. That is invisible from the outside, so
+    this prints one line per company saying whether its key came from the host
+    environment (a Railway variable) or from the admin panel's encrypted store,
+    and ends with the exact variable names to add if any are missing.
+    """
+    from src import key_store
+
+    line = "=" * 70
+    print(line)
+    print("Company API keys")
+    print(line)
+    print(f"CONFIG_PATH : {CONFIG_FILE}")
+    print(f"DATA_DIR    : {DATA_DIR}   (panel-stored keys live here)")
+    store = key_store.store_path(DATA_DIR)
+    print(f"key store   : {store}  ({'present' if store.exists() else 'not created yet'})")
+    if not (os.environ.get("DASHBOARD_SECRET_KEY") or "").strip():
+        print("  ! DASHBOARD_SECRET_KEY is not set — keys saved in the panel "
+              "cannot be decrypted, so those companies count as MISSING below.")
+    print()
+
+    missing: list[tuple[str, str]] = []
+    width = max((len(c.name) for c in config.companies), default=10)
+    for company in config.companies:
+        env = company.company_key_env or ""
+        if env and (os.environ.get(env) or "").strip():
+            source = "Railway variable"
+        elif env and key_store.get(env, DATA_DIR):
+            source = "admin panel"
+        else:
+            source = "MISSING"
+            missing.append((company.name, env))
+        state = "enabled" if company.enabled else "PAUSED"
+        print(f"  {company.name.ljust(width)}  {env or '(no variable name)':<32} "
+              f"{source:<17} {state}")
+
+    print()
+    if missing:
+        print(f"{len(missing)} company(ies) cannot authenticate and will NOT be polled.")
+        print("Add these on Railway (Variables tab), value = that company's "
+              "DriveHOS company key:")
+        for name, env in missing:
+            print(f"  {env or key_store.env_name_for(name)}   # {name}")
+        # ASCII only: this runs in a Railway log and in a Windows console that
+        # can't encode arrows or bullets, and a crash here would hide the list.
+        print("\nOr: admin panel > Companies > row menu > API key, which stores "
+              "the key on the volume instead (no redeploy needed).")
+    else:
+        print("Every company has a usable API key.")
+    print(line)
+    return 1 if missing else 0
+
+
 def eld_check(config: Config) -> int:
     """One-shot live fetch: print a normalized snapshot per configured driver."""
     now = datetime.now(timezone.utc)
@@ -343,7 +399,7 @@ def run_service(config: Config, dry_run: bool) -> int:
     # respond in ~1-2s; the scheduler then skips its own getUpdates step. The
     # command loop is the sole registry writer here, so it needs no shared lock;
     # the scheduler only reads the registry (iteration-safe).
-    roster = RosterCache(load_config)
+    roster = RosterCache(load_config, registry=registry)
     command_loop = not dry_run
     if command_loop:
         _start_command_loop(config, sender, registry, roster, lock=threading.RLock())
@@ -507,7 +563,8 @@ def run_dashboard(config: Config) -> int:
     state = AlertState(STATE_FILE)
     registry = GroupRegistry(REGISTRY_FILE)
     activity_log = ActivityLog(ACTIVITY_LOG_FILE)
-    roster = RosterCache(load_config, seen=RosterSeen(ROSTER_SEEN_FILE))
+    roster = RosterCache(load_config, seen=RosterSeen(ROSTER_SEEN_FILE),
+                         registry=registry)
     from src.templates_store import TemplateStore
     seed_templates = not os.path.exists(MESSAGE_TEMPLATES_FILE)
     template_store = TemplateStore(MESSAGE_TEMPLATES_FILE)
@@ -573,6 +630,8 @@ def main(argv: list[str]) -> int:
     print_summary(config)
     print("Config OK")
 
+    if "--check-keys" in argv:
+        return check_keys(config)
     if "--eld-check" in argv:
         return eld_check(config)
     if "--rules-check" in argv:

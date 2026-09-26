@@ -18,19 +18,23 @@ import threading
 import time
 
 from .eld import ELDError, build_provider
-from .registry import Candidate, dedupe_drivers
+from .registry import Candidate, dedupe_drivers, merge_people
 
 log = logging.getLogger("eld_alert_bot")
 
 
 class RosterCache:
-    def __init__(self, config_loader, ttl_seconds: int = 600, seen=None) -> None:
+    def __init__(self, config_loader, ttl_seconds: int = 600, seen=None,
+                 registry=None) -> None:
         """`config_loader` is called on each self-refresh so dashboard edits to
         config.yaml (new company, toggled enabled) are picked up. `seen` is an
         optional roster_seen.RosterSeen that records when each driver first
-        appears (the dashboard's red NEW label)."""
+        appears (the dashboard's red NEW label). `registry`, when given, keeps
+        the survivor of a two-record driver on whichever id is already linked to
+        a group."""
         self._config_loader = config_loader
         self.seen = seen
+        self._registry = registry
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
         self._candidates: list[Candidate] = []
@@ -45,6 +49,9 @@ class RosterCache:
         self._fetched_at: float = 0.0
         self._last_attempt: float = 0.0
         self._last_error: str | None = None
+
+    def _linked(self, driver_id: str) -> bool:
+        return self._registry is not None and self._registry.chat_for(driver_id) is not None
 
     def prime(self, company_name: str, snapshots) -> None:
         """Feed in snapshots the scheduler already fetched this cycle, so this
@@ -69,7 +76,11 @@ class RosterCache:
         The scheduler already drops cross-company repeats before priming; this
         repeats the rule for the self-refresh path below and for anything that
         primes this cache directly, so no reader — /roster, /assign, /hos, the
-        Drivers page, Watchlists — can ever be handed the same driver twice."""
+        Drivers page, Watchlists — can ever be handed the same driver twice.
+
+        Two passes, because a driver can be doubled in two different ways: the
+        same id returned by two company entries (dedupe_drivers), and one person
+        holding two ELD records with different ids (merge_people)."""
         seen: dict[str, str] = {}
         candidates: list[Candidate] = []
         duplicates: list[str] = []
@@ -77,8 +88,9 @@ class RosterCache:
             kept, dupes = dedupe_drivers(cands, seen, company)
             candidates.extend(kept)
             duplicates.extend(dupes)
+        candidates, merged = merge_people(candidates, prefer=self._linked)
         self._candidates = candidates
-        self._duplicates = duplicates
+        self._duplicates = duplicates + merged
 
     def _refresh(self) -> None:
         config = self._config_loader()
@@ -146,12 +158,14 @@ class RosterCache:
             if stale and (now - self._last_attempt) >= self._MIN_REFETCH_GAP:
                 self._last_attempt = now
                 self._refresh()
-            # Same one-row-per-driver rule as the roster above: a snapshot is
-            # returned only under the company that owns that driver, so
-            # per-company counters and Watchlists can't double-count either.
+            # Same one-row-per-PERSON rule as the roster above: a snapshot comes
+            # back only under the company that owns that driver, and only for an
+            # id the roster kept — so a second company entry, or a second ELD
+            # record for one person, can't double-count in the counters or
+            # Watchlists. An id the roster dropped isn't in `owner` at all.
             owner = {c.driver_id: c.company or "" for c in self._candidates}
             return [(company, snap) for company, snaps in self._snapshots_by_company.items()
-                    for snap in snaps if owner.get(snap.driver_id, company) == company]
+                    for snap in snaps if owner.get(snap.driver_id) == company]
 
     @property
     def last_error(self) -> str | None:

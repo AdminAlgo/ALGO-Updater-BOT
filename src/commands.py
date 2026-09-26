@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 
 from .eld.base import normalize_name
 from .registry import (Candidate, GroupRegistry, _name_matches, best_match,
-                       match_sender, unique_drivers)
+                       match_sender, merge_people, unique_drivers)
 
 log = logging.getLogger("eld_alert_bot")
 
@@ -525,17 +525,21 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
             say(f"No driver matching “{query}” on the roster. Try /roster {query}")
             return True
         if len(hits) != 1:
+            # Two drivers really can share a name, so the id goes on every line:
+            # when the names AND trucks read the same, it is the only thing that
+            # tells them apart, and without it there was no answer to give.
             names = "\n".join(f"  • {c.name}"
                               + (f" (truck {c.truck})" if c.truck else "")
+                              + f" · id {c.driver_id}"
                               for c in sorted(hits, key=lambda c: c.name)[:10])
             say(f"“{query}” matches {len(hits)} drivers — name one exactly:\n{names}\n"
+                f"Same name twice? Use the id:  /assign {hits[0].driver_id} | {chat_id}\n"
                 f"(for a co-driver group, /assign each name separately.)")
             return True
         driver = hits[0]
         title = registry.group_title(chat_id) or (
             (chat.get("title") or "") if str(chat.get("id")) == chat_id else "")
-        registry.unblock(driver.driver_id)
-        registry.register(driver.driver_id, chat_id, title, "manual", driver.name)
+        registry.register_person(driver, chat_id, title, "manual")
         registry.clear_pending(chat_id)
         log.info("assigned %s -> chat %s", driver.name, chat_id)
         say(f"✅ {driver.name} → {title or chat_id}\nHOS alerts will post there.")
@@ -549,9 +553,14 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
         removed = []
         for c in candidates:
             if _name_matches(c.name, arg) or _name_matches(arg, c.name):
-                if registry.unregister(c.driver_id):
+                # Every id of that person, or the record left behind keeps them
+                # linked and the alerts keep coming. Listed, not any(...) — that
+                # short-circuits and leaves the second record registered.
+                gone = [registry.unregister(did) for did in c.all_ids]
+                if any(gone):
                     removed.append(c.name)
-                registry.block(c.driver_id)
+                for did in c.all_ids:
+                    registry.block(did)
         if removed:
             log.info("unassigned %s", removed)
             say(f"✅ Removed group for {', '.join(removed)}. Use /assign to re-add.")
@@ -570,9 +579,8 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
         added = []
         for c in candidates:
             if _name_matches(c.name, arg) or _name_matches(arg, c.name):
-                registry.unblock(c.driver_id)
-                registry.register(c.driver_id, chat["id"], chat.get("title") or "",
-                                  "manual", c.name)
+                registry.register_person(c, str(chat["id"]), chat.get("title") or "",
+                                         "manual")
                 added.append(c.name)
         registry.clear_pending(chat["id"])
         if added:
@@ -630,9 +638,15 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
         m = best_match(title, candidates)
         if m.driver_id is None and human and sname:
             m = match_sender(sname, candidates)
-        if m.linkable and not registry.is_blocked(m.driver_id):
-            name = next((c.name for c in candidates if c.driver_id == m.driver_id), "")
-            if registry.register(m.driver_id, cid, title, m.matched_on, name):
+        who = next((c for c in candidates if c.driver_id == m.driver_id), None)
+        # /unassign blocks every id of the person, so an auto-link must look at
+        # all of them — otherwise a driver removed on purpose comes straight
+        # back the moment the ELD reports them under their other record.
+        blocked = any(registry.is_blocked(d) for d in who.all_ids) if who else \
+            registry.is_blocked(m.driver_id)
+        if m.linkable and not blocked:
+            name = who.name if who else ""
+            if who is not None and registry.register_person(who, cid, title, m.matched_on):
                 result = (name, cid, m.matched_on, title)
                 log.info("auto-linked %s -> %s [%s] via %s (%s)",
                          name, cid, title, m.matched_on, m.reason)
@@ -666,11 +680,17 @@ def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
                    lock=None, snapshots=None, low_hours_thresholds=None) -> list[tuple]:
     guard = lock or contextlib.nullcontext()
     admin_ids = tuple(admin_user_ids or ())
-    # One row per driver, whatever the caller handed us. A driver listed twice
-    # (two company entries on one ELD account) makes every command that has to
-    # identify a person — /assign, /add, title matching — see two people with
-    # one name and refuse to pick between them.
-    candidates = unique_drivers(candidates)
+    # One row per PERSON, whatever the caller handed us. A driver listed twice
+    # (two company entries on one ELD account, or one ELD account holding two
+    # records for them) makes every command that has to identify a person —
+    # /assign, /add, title matching — see two people with one name and refuse to
+    # pick between them. unique_drivers folds the repeated id; merge_people
+    # folds the second id belonging to the same human, preferring whichever one
+    # is already linked so the choice doesn't move around.
+    candidates, merged = merge_people(unique_drivers(candidates),
+                                      prefer=lambda did: registry.chat_for(did) is not None)
+    for line in merged:
+        log.info("roster: %s", line)
     newly: list[tuple] = []
     max_id = registry.offset
     now = _now_iso()

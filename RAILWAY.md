@@ -24,6 +24,17 @@ maintenance.
    | `DASHBOARD_ADMIN_PASSWORD` | password for the admin dashboard login |
    | `DASHBOARD_SECRET_KEY` | random 32-byte hex — `python -c "import secrets; print(secrets.token_hex(32))"` |
    | `DATA_DIR` | `/data` |
+   | `CONFIG_PATH` | `/data/config.yaml` |
+
+   `CONFIG_PATH` is what makes the admin panel's **Add company** stick. Without
+   it the panel writes the new company into the container's own `config.yaml`,
+   which is thrown away on the next redeploy — the company (and every driver it
+   polls) silently disappears. First boot copies the repo's `config.yaml` to
+   `/data/config.yaml`; after that the volume copy is the real one.
+
+   `DASHBOARD_SECRET_KEY` also encrypts the API keys typed into the panel.
+   Changing it makes those keys unreadable and disables their companies, so set
+   it once and leave it.
 
    Auth is two static Partner API keys per company (a platform-wide Provider
    key + each company's own Company key) — see `CLAUDE_HANDOFF.md`. Neither
@@ -42,6 +53,27 @@ maintenance.
 5. **Deploy.** Watch the **Deploy Logs** — you should see
    `Dashboard serving on 0.0.0.0:<port>` and `scheduler started — … poll every
    120s`, then `cycle … done`. Visit the public domain's `/login`.
+
+## Adding a company later
+
+Two ways, and they end up in the same place:
+
+- **Admin panel → Companies → Add company.** Paste the carrier's DriveHOS
+  Company key into the form. The key is encrypted onto `/data`, the company is
+  added **paused**, and nothing is polled until you open its row menu and
+  **Enable** it. No redeploy, no Railway variable.
+- **Railway variable.** Add `<CARRIER>_COMPANY_KEY` (e.g.
+  `SOLEH_EXPRESS_COMPANY_KEY`) with that carrier's Company key and redeploy.
+  A host variable always wins over a key stored in the panel.
+
+A company with no usable key is **disabled at startup and simply not polled** —
+no crash and no Telegram message, so it looks like nothing happened. To see
+where every company's key is coming from, and the exact variable names of any
+that are missing:
+
+```bash
+python main.py --check-keys      # Railway: Deployments -> ... -> Shell
+```
 
 ## IMPORTANT: stop the Mac copy
 Once Railway is running, **stop the Mac service** so two bots don't poll the
