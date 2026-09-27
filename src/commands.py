@@ -621,9 +621,17 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
 # --------------------------------------------------------------------------- #
 # Update processing
 # --------------------------------------------------------------------------- #
+# A Telegram client on a flaky connection resends a command it never got an ack
+# for — same text, same chat, a genuinely new update_id — and the bot answers
+# each one, which is indistinguishable from a real repeat click. This window
+# collapses same-chat/same-text resends into a single reply.
+_DUPLICATE_COMMAND_WINDOW_SECONDS = 8.0
+
+
 def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Candidate],
                  *, admin_user_ids, reply: bool, now: str,
-                 snapshots=None, low_hours_thresholds=None) -> tuple | None:
+                 snapshots=None, low_hours_thresholds=None,
+                 recent_commands: dict | None = None) -> tuple | None:
     """Handle a single update. Caller holds any lock and persists the offset."""
     chat = _chat_from_update(u)
     if not chat:
@@ -636,10 +644,25 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
     sender_id = (msg.get("from") or {}).get("id")
     is_admin = (not admin_user_ids) or (sender_id in admin_user_ids)
 
-    if cmd and _handle_command(cmd, text, chat, sender, registry, candidates, is_admin,
-                               snapshots=snapshots,
-                               low_hours_thresholds=low_hours_thresholds):
-        return None
+    if cmd:
+        if recent_commands is not None:
+            key = (cid, text)
+            t = time.monotonic()
+            last_t = recent_commands.get(key)
+            if last_t is not None and (t - last_t) < _DUPLICATE_COMMAND_WINDOW_SECONDS:
+                log.info("ignored duplicate command (resend within %.0fs): %s",
+                         _DUPLICATE_COMMAND_WINDOW_SECONDS, text)
+                return None
+            recent_commands[key] = t
+            if len(recent_commands) > 500:  # long uptime shouldn't grow this forever
+                cutoff = t - _DUPLICATE_COMMAND_WINDOW_SECONDS
+                for k, v in list(recent_commands.items()):
+                    if v < cutoff:
+                        del recent_commands[k]
+        if _handle_command(cmd, text, chat, sender, registry, candidates, is_admin,
+                           snapshots=snapshots,
+                           low_hours_thresholds=low_hours_thresholds):
+            return None
 
     if chat.get("type") not in ("group", "supergroup"):
         return None
@@ -702,7 +725,8 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
 
 def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
                    updates: list[dict], *, admin_user_ids=None, reply: bool = True,
-                   lock=None, snapshots=None, low_hours_thresholds=None) -> list[tuple]:
+                   lock=None, snapshots=None, low_hours_thresholds=None,
+                   recent_commands: dict | None = None) -> list[tuple]:
     guard = lock or contextlib.nullcontext()
     admin_ids = tuple(admin_user_ids or ())
     # One row per PERSON, whatever the caller handed us. A driver listed twice
@@ -734,7 +758,8 @@ def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
                 res = _process_one(u, sender, registry, candidates,
                                    admin_user_ids=admin_ids, reply=reply, now=now,
                                    snapshots=snapshots,
-                                   low_hours_thresholds=low_hours_thresholds)
+                                   low_hours_thresholds=low_hours_thresholds,
+                                   recent_commands=recent_commands)
                 if res:
                     newly.append(res)
             except Exception:  # one bad update must not stall the offset
@@ -785,6 +810,7 @@ def run_command_loop(sender, registry: GroupRegistry, roster_cache, *,
     if sender.set_my_commands(_BOT_COMMANDS):
         log.info("registered %d bot commands with Telegram", len(_BOT_COMMANDS))
     log.info("command loop started — long-poll %ds", poll_timeout)
+    recent_commands: dict = {}
     while not stop.is_set():
         started = time.monotonic()
         try:
@@ -806,6 +832,7 @@ def run_command_loop(sender, registry: GroupRegistry, roster_cache, *,
                 admin_user_ids=admin_user_ids, lock=lock,
                 snapshots=roster_cache.get_snapshot_records(),
                 low_hours_thresholds=low_hours_thresholds,
+                recent_commands=recent_commands,
             )
             for name, chat_id, how, title in newly:
                 log.info("registered group for %s (by %s): %s [%s]", name, how, title, chat_id)
