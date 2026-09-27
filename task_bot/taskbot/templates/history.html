@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block body %}
+<h1>History</h1>
+<p class="muted">Every change, newest first. 🌐 rows were made on this website and are never shown in Telegram.</p>
+<div class="tbl"><table>
+<thead><tr><th>When</th><th>Task</th><th>Who</th><th>What happened</th><th>Where</th></tr></thead>
+<tbody>{% for h in rows %}
+<tr><td class="mono">{{ T.fmt_stamp(h.at) }}</td><td class="mono"><a href="{{ url_for('task_edit', task_id=h.task_id) }}">#{{ T.code(h.task_id) }}</a></td>
+<td>{{ 'Website' if h.who=='WEB' else name_of(h.who) }}</td><td>{{ h.text }}</td>
+<td class="src-{{ h.source }}">{{ '🌐 Website' if h.source=='web' else '💬 Telegram' }}</td></tr>
+{% else %}<tr><td colspan="5" class="muted">Nothing yet.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

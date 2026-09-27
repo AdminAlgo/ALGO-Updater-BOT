@@ -1,0 +1,13 @@
+[
+  {"id": "N820", "name": "Nusret", "is_admin": true, "tg_username": "milord0_0"},
+  {"id": "N520", "name": "Abdulaziz", "is_admin": true, "tg_username": "Abdulakhatov04"},
+  {"id": "A430", "name": "Ali"},
+  {"id": "S140", "name": "Sara"},
+  {"id": "J125", "name": "Joe"},
+  {"id": "T345", "name": "Tony"},
+  {"id": "L825", "name": "Logan"},
+  {"id": "N565", "name": "Niko"},
+  {"id": "E885", "name": "Edwin"},
+  {"id": "F935", "name": "Fero"},
+  {"id": "G970", "name": "Guts"}
+]

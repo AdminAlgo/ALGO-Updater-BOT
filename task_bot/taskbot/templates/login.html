@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Log in{% endblock %}
+{% block body %}
+<div class="card" style="max-width:380px;margin:60px auto">
+  <h1>ALGO Tasks · Admin</h1>
+  <p class="muted">Only for admins. Только для админов.</p>
+  {% if error %}<div class="errors">{{ error }}</div>{% endif %}
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Password<input type="password" name="password" autofocus required></label>
+    <p><button>Log in</button></p>
+  </form>
+</div>
+{% endblock %}

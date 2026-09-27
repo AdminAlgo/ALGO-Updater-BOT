@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}ALGO Tasks{% endblock %} · Admin</title>
+<style>
+:root{--bg:#eef1f4;--panel:#fff;--ink:#16212c;--muted:#5b6977;--line:#d5dbe1;--soft:#f5f7f9;--accent:#2a78bb;
+--new:#5b6977;--progress:#1f6fb8;--blocked:#a26500;--approval:#7340c2;--done:#1d7a45;--rejected:#b8322a}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#0b1117;--panel:#121b24;--ink:#e2e9f0;--muted:#8a99a7;--line:#223140;--soft:#172230;--accent:#5aa6e2;
+--new:#9aa8b5;--progress:#6db3f0;--blocked:#e8b04a;--approval:#b596f0;--done:#5fcf8c;--rejected:#f07a70}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+header{background:var(--panel);border-bottom:1px solid var(--line)}
+.bar{max-width:1200px;margin:0 auto;padding:10px 16px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
+.brand{font-weight:700;margin-right:8px}
+nav a{text-decoration:none;color:var(--muted);padding:6px 8px;border-radius:8px}
+nav a.on{color:var(--ink);background:var(--soft)}
+.bar form{margin-left:auto}
+main{max-width:1200px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:0 0 14px}
+h2{font-size:17px;margin:22px 0 10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.flash{background:var(--panel);border:1px solid var(--done);color:var(--done);border-radius:10px;padding:10px 14px;margin-bottom:14px}
+.errors{background:var(--panel);border:1px solid var(--rejected);color:var(--rejected);border-radius:10px;padding:10px 14px;margin-bottom:14px}
+.stats{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 12px;color:var(--muted);font-size:13px}
+.stat b{color:var(--ink);font-size:17px;margin-right:6px;font-variant-numeric:tabular-nums}
+.tbl{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;min-width:900px;font-size:14px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:var(--soft)}
+tr:last-child td{border-bottom:0}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
+.muted{color:var(--muted);font-size:13px}
+.pill{display:inline-block;font-size:12.5px;font-weight:600;padding:1px 9px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.s-new{color:var(--new)}.s-progress{color:var(--progress)}.s-blocked{color:var(--blocked)}.s-approval{color:var(--approval)}.s-done{color:var(--done)}.s-rejected{color:var(--rejected)}.over{color:var(--rejected)}
+.src-web{color:var(--approval)}.src-bot{color:var(--progress)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.wide{grid-column:1/-1}
+label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--soft);border:1px solid var(--line);border-radius:9px;padding:8px 10px;width:100%}
+textarea{min-height:80px;resize:vertical}
+input.upper{text-transform:uppercase}
+button{font:600 14px system-ui,sans-serif;border:0;border-radius:9px;padding:9px 16px;cursor:pointer;background:var(--accent);color:#fff}
+button.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-bottom:12px}
+.filters label{min-width:160px}
+</style>
+</head>
+<body>
+{% if session.admin %}
+<header><div class="bar">
+  <span class="brand">ALGO Tasks · Admin</span>
+  <nav>
+    <a href="{{ url_for('tasks') }}" class="{{ 'on' if request.endpoint in ('tasks','task_edit') }}">Tasks</a>
+    <a href="{{ url_for('task_new') }}" class="{{ 'on' if request.endpoint=='task_new' }}">➕ Add task</a>
+    <a href="{{ url_for('history') }}" class="{{ 'on' if request.endpoint=='history' }}">History</a>
+    <a href="{{ url_for('members_page') }}" class="{{ 'on' if request.endpoint=='members_page' }}">Members</a>
+  </nav>
+  <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost">Log out</button></form>
+</div></header>
+{% endif %}
+<main>
+{% for m in get_flashed_messages() %}<div class="flash">{{ m }}</div>{% endfor %}
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Members{% endblock %}
+{% block body %}
+<h1>Members</h1>
+{% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+<p class="muted">Each person opens the bot in private and sends their employee ID once. Then their Telegram is ✅ linked.</p>
+<div class="tbl"><table>
+<thead><tr><th>Employee ID</th><th>Name</th><th>Role</th><th>Telegram username</th><th>Active</th><th>Telegram</th><th>Open</th><th>Done</th><th></th></tr></thead>
+<tbody>{% for m in rows %}
+<tr>
+  {% set f = 'f-' ~ m.id %}
+  <td class="mono">{{ m.id }}</td>
+  <td><input form="{{ f }}" name="name" value="{{ m.name }}"></td>
+  <td><select form="{{ f }}" name="role"><option value="member">Member</option><option value="admin" {{ 'selected' if m.is_admin }}>Admin</option></select></td>
+  <td><input form="{{ f }}" name="tg_username" value="{{ m.tg_username or '' }}" placeholder="without @"></td>
+  <td><select form="{{ f }}" name="active"><option value="1">Yes</option><option value="0" {{ 'selected' if not m.active }}>No</option></select></td>
+  <td>{{ '✅ Linked' if m.tg_user_id else '⏳ Waiting' }}</td>
+  <td class="mono">{{ counts[m.id][0] }}</td><td class="mono">{{ counts[m.id][1] }}</td>
+  <td style="white-space:nowrap"><form id="{{ f }}" method="post" action="{{ url_for('member_update', member_id=m.id) }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button name="action" value="save">Save</button>
+    {% if m.tg_user_id %}<button class="ghost" name="action" value="unlink">Unlink</button>{% endif %}</form></td>
+</tr>{% endfor %}</tbody></table></div>
+
+<h2>Add a member</h2>
+<form method="post" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="grid">
+    <label>Employee ID<input name="id" class="upper" placeholder="K150" required></label>
+    <label>Name<input name="name" placeholder="Kevin" required></label>
+    <label>Telegram username (optional)<input name="tg_username" placeholder="without @"></label>
+    <label>Role<select name="role"><option value="member">Member</option><option value="admin">Admin</option></select></label>
+  </div>
+  <p><button>Add member</button></p>
+</form>
+{% endblock %}
