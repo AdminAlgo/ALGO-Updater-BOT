@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}Dashboard{% endblock %}
+{% block body %}
+<div class="head">
+  <div><div class="eyebrow">Overview · Обзор</div><h1>Dashboard</h1><p class="sub">{{ T.fmt_date(today) }} · Tashkent time</p></div>
+  <div class="actions"><a class="btn ghost" href="{{ url_for('reports') }}">{{ ui.icon('reports') }}PDF report</a><a class="btn" href="{{ url_for('task_new') }}">{{ ui.icon('plus') }}New task</a></div>
+</div>
+<div class="kpis">
+  {% for label, n, color, href in stats %}<a class="kpi c-{{ color }}" href="{{ href }}"><span class="n">{{ n }}</span><span class="l">{{ label }}</span></a>{% endfor %}
+</div>
+<div class="grid2">
+  <div class="stack">
+    <section class="card">
+      <div class="card-h"><h2>Needs attention</h2><span class="muted" style="font-size:13px">Overdue and waiting for approval</span></div>
+      <div class="feed">
+      {% for t in attention %}
+        <a class="row" href="{{ url_for('task_edit', task_id=t.id) }}">
+          <span class="id">#{{ T.code(t.id) }}</span>
+          <span class="title">{{ clean(t.title) }}<span class="small muted"> · {{ '👥 All team' if t.assignee=='ALL' else name_of(t.assignee) }} · due {{ T.fmt_date(t.deadline, year=False) }}</span></span>
+          {% if t.status == 'approval' %}<span class="pill s-approval">Needs approval</span>{% else %}<span class="pill s-over">Overdue</span>{% endif %}
+        </a>
+      {% else %}<div class="empty">✓ Nothing needs attention right now.</div>{% endfor %}
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-h"><h2>Recent activity</h2><a href="{{ url_for('history') }}" style="font-size:13px">All history →</a></div>
+      <div class="timeline">
+      {% for h in recent %}
+        <div class="tl {{ h.source }}">
+          <div class="meta"><span class="mono">{{ T.fmt_stamp(h.at) }}</span> · <b style="color:var(--text)">{{ name_of(h.who) }}</b> · <a class="id" href="{{ url_for('task_edit', task_id=h.task_id) }}">#{{ T.code(h.task_id) }}</a>
+            <span class="tag {{ h.source }}">{{ 'Website' if h.source=='web' else 'Telegram' }}</span></div>
+          <div class="txt">{{ h.text }}</div>
+        </div>
+      {% else %}<div class="empty">No activity yet.</div>{% endfor %}
+      </div>
+    </section>
+  </div>
+  <div class="stack">
+    <section class="card">
+      <div class="card-h"><h2>Status of all tasks</h2><span class="mono muted">{{ total }}</span></div>
+      {% set colors = {'new':'var(--grey)','progress':'var(--blue)','blocked':'var(--amber)','approval':'var(--violet)','done':'var(--green)','rejected':'var(--red)'} %}
+      <div class="bar">{% for s in STATUSES if status_counts[s] and total %}<span style="--c:{{ colors[s] }};width:{{ (100 * status_counts[s] / total)|round(2) }}%"></span>{% endfor %}</div>
+      <div class="legend">{% for s in STATUSES %}<div><span class="pill s-{{ s }}">{{ plain[s] }}</span><span class="mono">{{ status_counts[s] }}</span></div>{% endfor %}</div>
+    </section>
+    <section class="card">
+      <div class="card-h"><h2>Team workload</h2><span class="muted" style="font-size:13px">Done = this month</span></div>
+      <table>
+        <thead><tr><th>Person</th><th>Open</th><th>Overdue</th><th>Done</th></tr></thead>
+        <tbody>
+        {% if team_open %}<tr><td>👥 All team</td><td class="num">{{ team_open }}</td><td class="num">—</td><td class="num">—</td></tr>{% endif %}
+        {% for m, o, od, d in workload %}
+          <tr class="link" data-href="{{ url_for('tasks', who=m.id) }}"><td>{{ m.name }}<span class="small mono">{{ m.id }}</span></td><td class="num">{{ o }}</td>
+            <td class="num" style="{{ 'color:var(--red)' if od }}">{{ od }}</td><td class="num" style="color:var(--green)">{{ d }}</td></tr>
+        {% else %}{% if not team_open %}<tr><td colspan="4" class="muted">No open work.</td></tr>{% endif %}{% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </div>
+</div>
+{% endblock %}

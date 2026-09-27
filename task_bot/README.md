@@ -19,9 +19,10 @@ project, separate Telegram bot.
 - **Check-ins at 17:00 and 01:00 (Tashkent)**: one message per open task. No answer after
   30 min → reminder; after 60 min → admins are tagged. Overdue + "in progress" → a note is required.
 - **Overdue reminders** every 3 hours.
-- **Website (admins only)**: see and edit everything, add tasks and members, full history.
-  Changes made on the website are **never announced in Telegram** and are hidden from the
-  Telegram history.
+- **Website (one main account, username + password)**: black/green ALGO GROUP · CASER design.
+  Dashboard, tasks with full editing, history of every task, team, account settings, and
+  **PDF reports per month / quarter / year** (plus a PDF per task). Changes made on the website
+  are **never announced in Telegram** and are hidden from the Telegram history.
 
 ## First setup / Первый запуск
 
@@ -31,7 +32,8 @@ project, separate Telegram bot.
    Add a **Volume** mounted at `/data`.
 3. **Railway → Variables**:
    - `TELEGRAM_BOT_TOKEN`: from @BotFather
-   - `DASHBOARD_PASSWORD`: website password
+   - `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD`: the website account (can be changed later on
+     the website → Account)
    - `SECRET_KEY`: long random text
    - `DATA_DIR=/data`
    - optional: `ADMIN_USERNAMES`, `TIMEZONE`, `CHECKIN_TIMES`, `REMIND_AFTER_MIN`,

@@ -61,7 +61,7 @@ def env(tmp_path):
     db.set_setting("group_chat_id", GROUP)
     cfg = config.Config(token="x", admin_usernames=frozenset({"milord0_0", "abdulakhatov04"}), creator_usernames=frozenset(), tz=TZ,
                         checkin_times=((17, 0), (1, 0)), remind_after_min=30, escalate_after_min=60,
-                        overdue_every_hours=3, data_dir=str(tmp_path), port=0, dashboard_password="pw",
+                        overdue_every_hours=3, data_dir=str(tmp_path), port=0, dashboard_username="boss", dashboard_password="pw",
                         secret_key="s" * 32, group_chat_id=None)
     bot = TaskBot(cfg, db)
     bot.app = SimpleNamespace(bot=FakeBot(), job_queue=FakeJobs())
@@ -286,7 +286,7 @@ def test_website_edits_stay_off_telegram(env):
     c.get("/login")
     with c.session_transaction() as s:
         token = s["csrf"]
-    assert c.post("/login", data={"password": "pw", "csrf": token}).status_code == 302
+    assert c.post("/login", data={"username": "boss", "password": "pw", "csrf": token}).status_code == 302
     assert b"Check medical cards" in c.get("/tasks").data
     with c.session_transaction() as s:
         token = s["csrf"]                                             # login gives a fresh token
@@ -302,3 +302,60 @@ def test_website_edits_stay_off_telegram(env):
     bad = dict(form, company="lowercase llc")
     assert b"CAPITAL" in c.post(f"/tasks/{tid}", data=bad).data
     assert c.post(f"/tasks/{tid}", data=dict(form, csrf="wrong")).status_code == 400
+
+
+# ---------------- website: login, pages, PDF, account ----------------
+def web_login(env, user="boss", pw="pw"):
+    c = create_web(env.cfg, env.db).test_client()
+    c.get("/login")
+    with c.session_transaction() as s:
+        token = s["csrf"]
+    r = c.post("/login", data={"username": user, "password": pw, "csrf": token})
+    c.get("/health")                      # the next request creates a fresh form token
+    with c.session_transaction() as s:
+        token = s["csrf"]
+    return c, r, token
+
+
+def test_login_needs_username_and_password(env):
+    _, r, _ = web_login(env, "boss", "wrong")
+    assert b"Wrong username or password" in r.data
+    _, r, _ = web_login(env, "someone", "pw")
+    assert b"Wrong username or password" in r.data
+    _, r, _ = web_login(env)
+    assert r.status_code == 302
+
+
+def test_every_page_renders(env):
+    tid = make_task(env, title="Audit <script>x</script>")
+    env.db.add_note(tid, "note", "A430")
+    c, _, _ = web_login(env)
+    for url in ["/", "/tasks", "/tasks?show=overdue&who=ALL&q=t-0001", "/tasks/new", f"/tasks/{tid}", "/history",
+                "/history?period=month:2026-09&source=bot&q=audit", "/history?period=year:2026", "/reports",
+                "/reports?kind=quarter&value=2026-Q3", "/reports?kind=year", "/members", "/account"]:
+        r = c.get(url)
+        assert r.status_code == 200, url
+        assert b"<script>x</script>" not in r.data, url
+
+
+def test_pdf_reports(env):
+    tid = make_task(env, title="Проверка медкарт")        # Cyrillic must work in the PDF
+    press(env, "A430", f"c:done:{tid}")
+    type_text(env, "N820", f"approve {tid}")
+    c, _, _ = web_login(env)
+    for url in ["/reports/pdf?kind=month&value=2026-09&history=1", "/reports/pdf?kind=quarter&value=2026-Q3&history=0",
+                "/reports/pdf?kind=year&value=2026", f"/tasks/{tid}/pdf"]:
+        r = c.get(url)
+        assert r.status_code == 200 and r.data[:4] == b"%PDF", url
+    s = __import__("taskbot.report", fromlist=["x"]).summarize(env.db, "month", "2026-09")
+    assert s["completed"] == 1 and s["created"] == 1
+    assert c.get("/reports/pdf?kind=month&value=bad").status_code == 400
+
+
+def test_account_change(env):
+    c, _, token = web_login(env)
+    r = c.post("/account", data={"csrf": token, "username": "algo_caser", "new_password": "NewStrongPass1",
+                                 "again": "NewStrongPass1", "current": "pw"}, follow_redirects=True)
+    assert b"Account saved" in r.data
+    assert web_login(env, "boss", "pw")[1].status_code == 200            # old login refused
+    assert web_login(env, "algo_caser", "NewStrongPass1")[1].status_code == 302

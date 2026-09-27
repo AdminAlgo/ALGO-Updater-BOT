@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}PDF reports{% endblock %}
+{% block body %}
+<div class="head">
+  <div><div class="eyebrow">Reports · Отчёты</div><h1>PDF reports</h1><p class="sub">Pick a month, a quarter or a year. Check the numbers, then download the PDF.</p></div>
+</div>
+<div class="chips">
+  {% for k, lab in [('month','Month'),('quarter','Quarter'),('year','Year')] %}<a class="chip {{ 'on' if kind==k }}" href="{{ url_for('reports', kind=k) }}">{{ lab }}</a>{% endfor %}
+</div>
+<form class="filters" method="get">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <label>{{ kind|capitalize }}
+    <select name="value" onchange="this.form.submit()">{% for val, lab in options[kind] %}<option value="{{ val }}" {{ 'selected' if value==val }}>{{ lab }}</option>{% endfor %}</select></label>
+  <div class="actions">
+    <a class="btn" href="{{ url_for('report_pdf', kind=kind, value=value, history=1) }}">{{ ui.icon('pdf') }}Download PDF with full history</a>
+    <a class="btn ghost" href="{{ url_for('report_pdf', kind=kind, value=value, history=0) }}">{{ ui.icon('pdf') }}Summary only</a>
+  </div>
+</form>
+<div class="kpis">
+  {% for label, n, c in [('Active tasks', s.active, 'green'), ('Created', s.created, 'blue'), ('Completed', s.completed, 'green'), ('Rejected', s.rejected, 'grey'), ('Still open', s.open, 'amber'), ('Overdue now', s.overdue, 'red')] %}
+  <div class="kpi c-{{ c }}"><span class="n">{{ n }}</span><span class="l">{{ label }}</span></div>{% endfor %}
+</div>
+<div class="grid2">
+  <section class="card">
+    <div class="card-h"><h2>Tasks in {{ s.label }}</h2><span class="mono muted">{{ s.tasks|length }}</span></div>
+    <div class="feed">
+    {% for t in s.tasks %}
+      <a class="row" href="{{ url_for('task_edit', task_id=t.id) }}"><span class="id">#{{ T.code(t.id) }}</span>
+        <span class="title">{{ clean(t.title) }}<span class="small muted"> · {{ '👥 All team' if t.assignee=='ALL' else name_of(t.assignee) }}</span></span>
+        <span class="pill s-{{ t.status }}">{{ plain[t.status] }}</span></a>
+    {% else %}<div class="empty">No tasks were created or changed in this period.</div>{% endfor %}
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-h"><h2>Team in {{ s.label }}</h2></div>
+    <table><thead><tr><th>Person</th><th>Tasks</th><th>Done</th><th>Open</th><th>Overdue</th></tr></thead><tbody>
+    {% for who, p in s.people.items() %}
+      <tr><td>{{ '👥 All team' if who=='ALL' else name_of(who) }}</td><td class="num">{{ p.assigned }}</td><td class="num" style="color:var(--green)">{{ p.done }}</td>
+        <td class="num">{{ p.open }}</td><td class="num" style="{{ 'color:var(--red)' if p.overdue }}">{{ p.overdue }}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">No data.</td></tr>{% endfor %}
+    </tbody></table>
+  </section>
+</div>
+{% endblock %}

@@ -1,39 +1,39 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Tasks{% endblock %}
 {% block body %}
-<h1>Tasks</h1>
-<div class="stats">{% for k, n in stats.items() %}<span class="stat"><b>{{ n }}</b>{{ k }}</span>{% endfor %}</div>
+<div class="head">
+  <div><div class="eyebrow">Tasks · Задачи</div><h1>Tasks</h1><p class="sub">Click a row to open, edit and see its full history.</p></div>
+  <div class="actions"><a class="btn" href="{{ url_for('task_new') }}">{{ ui.icon('plus') }}New task</a></div>
+</div>
+<div class="chips">
+  {% for key, lab in [('open','Open'),('overdue','Overdue'),('approval','Needs approval'),('blocked','Waiting'),('done','Done'),('rejected','Rejected'),('all','All')] %}
+  <a class="chip {{ 'on' if show==key }}" href="{{ url_for('tasks', show=key, who=who, q=q) }}">{{ lab }} <b>{{ counts[key] }}</b></a>{% endfor %}
+</div>
 <form class="filters" method="get">
-  <label>Show
-    <select name="show">
-      {% for val, lab in [('open','Open (not closed)'),('overdue','🔴 Overdue'),('all','All')] %}
-      <option value="{{ val }}" {{ 'selected' if show==val }}>{{ lab }}</option>{% endfor %}
-      {% for s in STATUSES %}<option value="{{ s }}" {{ 'selected' if show==s }}>{{ T.STATUS[s] }}</option>{% endfor %}
-    </select></label>
+  <input type="hidden" name="show" value="{{ show }}">
   <label>Assignee
-    <select name="who"><option value="">Everyone</option>
+    <select name="who" onchange="this.form.submit()"><option value="">Everyone</option>
       <option value="ALL" {{ 'selected' if who=='ALL' }}>👥 All team members</option>
       {% for m in members.values() %}<option value="{{ m.id }}" {{ 'selected' if who==m.id }}>{{ m.name }} · {{ m.id }}</option>{% endfor %}
     </select></label>
   <label>Search<input name="q" value="{{ q }}" placeholder="Title, company or T-0040"></label>
-  <button>Filter</button>
+  <button class="btn ghost">Search</button>
 </form>
 <div class="tbl"><table>
-<thead><tr><th>ID</th><th>Task</th><th>Assignee</th><th>Company</th><th>Category</th><th>Priority</th><th>Deadline</th><th>Status</th><th>Latest note</th><th>Last update</th></tr></thead>
+<thead><tr><th>ID</th><th>Task</th><th>Assignee</th><th>Company</th><th>Priority</th><th>Deadline</th><th>Status</th><th>Latest note</th></tr></thead>
 <tbody>
 {% for t in rows %}
-<tr>
-  <td class="mono"><a href="{{ url_for('task_edit', task_id=t.id) }}">#{{ T.code(t.id) }}</a></td>
-  <td><a href="{{ url_for('task_edit', task_id=t.id) }}">{{ t.title }}</a></td>
-  <td>{{ '👥 All team' if t.assignee=='ALL' else name_of(t.assignee) }}<div class="muted">{{ t.assignee if t.assignee!='ALL' }}</div></td>
+<tr class="link" data-href="{{ url_for('task_edit', task_id=t.id) }}">
+  <td><a class="id" href="{{ url_for('task_edit', task_id=t.id) }}">#{{ T.code(t.id) }}</a></td>
+  <td><b style="font-weight:600">{{ t.title }}</b><span class="small">{{ t.category }}</span></td>
+  <td>{{ '👥 All team' if t.assignee=='ALL' else name_of(t.assignee) }}</td>
   <td>{{ t.company }}</td>
-  <td>{{ t.category }}</td>
   <td>{{ T.PRIORITY.get(t.priority, '') }}</td>
-  <td class="mono">{{ T.fmt_date(t.deadline, year=False) }}{% if overdue(t) %}<div class="over">🔴 Overdue</div>{% endif %}</td>
-  <td><span class="pill s-{{ t.status }}">{{ T.STATUS[t.status] }}</span>{% if t.reason and t.status in ('blocked','rejected') %}<div class="muted">{{ t.reason }}</div>{% endif %}</td>
-  <td>{{ t.last_note or '—' }}{% if t.last_note %}<div class="muted">{{ name_of(t.last_note_by) }} · {{ T.fmt_stamp(t.last_note_at) }}</div>{% endif %}</td>
-  <td class="mono">{{ T.fmt_stamp(t.updated_at) }}<div class="muted">{{ name_of(t.updated_by) }}</div></td>
+  <td class="num">{{ T.fmt_date(t.deadline, year=False) }}{% if overdue(t) %}<span class="small" style="color:var(--red)">● Overdue</span>{% endif %}</td>
+  <td><span class="pill s-{{ t.status }}">{{ plain[t.status] }}</span>{% if t.reason and t.status in ('blocked','rejected') %}<span class="small">{{ t.reason }}</span>{% endif %}</td>
+  <td>{% if t.last_note %}{{ t.last_note }}<span class="small">{{ name_of(t.last_note_by) }} · {{ T.fmt_stamp(t.last_note_at) }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
 </tr>
-{% else %}<tr><td colspan="10" class="muted">No tasks here.</td></tr>{% endfor %}
+{% else %}<tr><td colspan="8" class="empty">No tasks here.</td></tr>{% endfor %}
 </tbody></table></div>
 {% endblock %}

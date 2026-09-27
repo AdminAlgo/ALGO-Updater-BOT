@@ -299,6 +299,11 @@ class DB:
         with self.conn() as c:
             return c.execute("SELECT * FROM history ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 
+    def history_between(self, start, end):
+        """History rows with start <= at < end (dates or stamps as 'YYYY-MM-DD[ HH:MM]'), oldest first."""
+        with self.conn() as c:
+            return c.execute("SELECT * FROM history WHERE at >= ? AND at < ? ORDER BY id", (start, end)).fetchall()
+
     # ---------- telegram card messages ----------
     def add_card(self, task_id, chat_id, message_id):
         with self.conn() as c:

@@ -1,36 +1,37 @@
 {% extends "base.html" %}
-{% block title %}Members{% endblock %}
+{% import "_ui.html" as ui %}
+{% block title %}Team{% endblock %}
 {% block body %}
-<h1>Members</h1>
+<div class="head">
+  <div><div class="eyebrow">People · Сотрудники</div><h1>Team</h1>
+  <p class="sub">The bot links people by Telegram account. Put each person's Telegram username so they match their employee ID.</p></div>
+</div>
 {% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
-<p class="muted">No registration: the bot links a person when they write in the group or press a button. Fill in the Telegram username so the bot links them to the right employee ID (otherwise a new "TG…" member is created). Approvals are allowed only for the Telegram accounts in ADMIN_USERNAMES.</p>
 <div class="tbl"><table>
-<thead><tr><th>Employee ID</th><th>Name</th><th>Role</th><th>Telegram username</th><th>Active</th><th>Telegram</th><th>Open</th><th>Done</th><th></th></tr></thead>
+<thead><tr><th>ID</th><th>Name</th><th>Telegram username</th><th>Active</th><th>Telegram</th><th>Open</th><th>Done</th><th></th></tr></thead>
 <tbody>{% for m in rows %}
 <tr>
   {% set f = 'f-' ~ m.id %}
-  <td class="mono">{{ m.id }}</td>
+  <td class="id">{{ m.id }}</td>
   <td><input form="{{ f }}" name="name" value="{{ m.name }}"></td>
-  <td><select form="{{ f }}" name="role"><option value="member">Member</option><option value="admin" {{ 'selected' if m.is_admin }}>Admin</option></select></td>
   <td><input form="{{ f }}" name="tg_username" value="{{ m.tg_username or '' }}" placeholder="without @"></td>
   <td><select form="{{ f }}" name="active"><option value="1">Yes</option><option value="0" {{ 'selected' if not m.active }}>No</option></select></td>
-  <td>{{ '✅ Linked' if m.tg_user_id else '⏳ Waiting' }}</td>
-  <td class="mono">{{ counts[m.id][0] }}</td><td class="mono">{{ counts[m.id][1] }}</td>
+  <td>{% if m.tg_user_id %}<span class="pill s-done">Linked</span>{% else %}<span class="pill s-new">Not yet</span>{% endif %}</td>
+  <td class="num">{{ counts[m.id][0] }}</td><td class="num">{{ counts[m.id][1] }}</td>
   <td style="white-space:nowrap"><form id="{{ f }}" method="post" action="{{ url_for('member_update', member_id=m.id) }}">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button name="action" value="save">Save</button>
-    {% if m.tg_user_id %}<button class="ghost" name="action" value="unlink">Unlink</button>{% endif %}</form></td>
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="role" value="{{ 'admin' if m.is_admin else 'member' }}">
+    <button class="btn small" name="action" value="save">Save</button>
+    {% if m.tg_user_id %}<button class="btn ghost small" name="action" value="unlink">Unlink</button>{% endif %}</form></td>
 </tr>{% endfor %}</tbody></table></div>
-
-<h2>Add a member</h2>
-<form method="post" class="card">
-  <input type="hidden" name="csrf" value="{{ csrf }}">
-  <div class="grid">
+<form method="post" class="card" style="margin-top:18px">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="role" value="member">
+  <div class="card-h"><h2>Add a person</h2></div>
+  <div class="fgrid">
     <label>Employee ID<input name="id" class="upper" placeholder="K150" required></label>
     <label>Name<input name="name" placeholder="Kevin" required></label>
-    <label>Telegram username (optional)<input name="tg_username" placeholder="without @"></label>
-    <label>Role<select name="role"><option value="member">Member</option><option value="admin">Admin</option></select></label>
+    <label>Telegram username<input name="tg_username" placeholder="without @"></label>
   </div>
-  <p><button>Add member</button></p>
+  <div class="actions" style="margin-top:14px"><button class="btn">{{ ui.icon('plus') }}Add person</button></div>
 </form>
+<p class="muted" style="font-size:13px;margin-top:14px">Approvals in Telegram are allowed only for the admin accounts @milord0_0 and @Abdulakhatov04.</p>
 {% endblock %}

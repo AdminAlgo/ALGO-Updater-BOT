@@ -1,13 +1,32 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}History{% endblock %}
 {% block body %}
-<h1>History</h1>
-<p class="muted">Every change, newest first. 🌐 rows were made on this website and are never shown in Telegram.</p>
+<div class="head">
+  <div><div class="eyebrow">Monitoring · Мониторинг</div><h1>History</h1><p class="sub">{{ label }} · {{ rows|length }} changes. Website changes are never shown in Telegram.</p></div>
+</div>
+<form class="filters" method="get">
+  <label>Period
+    <select name="period" onchange="this.form.submit()">
+      <option value="">Latest 500 changes</option>
+      {% for kind, title in [('month','Months'),('quarter','Quarters'),('year','Years')] %}
+      <optgroup label="{{ title }}">{% for val, lab in options[kind] %}<option value="{{ kind }}:{{ val }}" {{ 'selected' if period == kind ~ ':' ~ val }}>{{ lab }}</option>{% endfor %}</optgroup>
+      {% endfor %}
+    </select></label>
+  <label>Where
+    <select name="source" onchange="this.form.submit()">
+      <option value="">Telegram + Website</option><option value="bot" {{ 'selected' if source=='bot' }}>Telegram only</option><option value="web" {{ 'selected' if source=='web' }}>Website only</option>
+    </select></label>
+  <label>Search<input name="q" value="{{ q }}" placeholder="Word or T-0040"></label>
+  <button class="btn ghost">Search</button>
+</form>
 <div class="tbl"><table>
 <thead><tr><th>When</th><th>Task</th><th>Who</th><th>What happened</th><th>Where</th></tr></thead>
 <tbody>{% for h in rows %}
-<tr><td class="mono">{{ T.fmt_stamp(h.at) }}</td><td class="mono"><a href="{{ url_for('task_edit', task_id=h.task_id) }}">#{{ T.code(h.task_id) }}</a></td>
-<td>{{ 'Website' if h.who=='WEB' else name_of(h.who) }}</td><td>{{ h.text }}</td>
-<td class="src-{{ h.source }}">{{ '🌐 Website' if h.source=='web' else '💬 Telegram' }}</td></tr>
-{% else %}<tr><td colspan="5" class="muted">Nothing yet.</td></tr>{% endfor %}</tbody></table></div>
+<tr class="link" data-href="{{ url_for('task_edit', task_id=h.task_id) }}">
+  <td class="num">{{ T.fmt_stamp(h.at) }}</td>
+  <td><a class="id" href="{{ url_for('task_edit', task_id=h.task_id) }}">#{{ T.code(h.task_id) }}</a>{% if tasks.get(h.task_id) %}<span class="small">{{ T.shorten(tasks[h.task_id].title, 42) }}</span>{% endif %}</td>
+  <td>{{ name_of(h.who) }}</td><td>{{ h.text }}</td>
+  <td><span class="tag {{ h.source }}">{{ 'Website' if h.source=='web' else 'Telegram' }}</span></td></tr>
+{% else %}<tr><td colspan="5" class="empty">Nothing in this period.</td></tr>{% endfor %}</tbody></table></div>
 {% endblock %}

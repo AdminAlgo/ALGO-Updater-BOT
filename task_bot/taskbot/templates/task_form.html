@@ -1,54 +1,70 @@
 {% extends "base.html" %}
-{% block title %}{{ ('#' ~ T.code(task.id)) if task else 'Add task' }}{% endblock %}
+{% import "_ui.html" as ui %}
+{% block title %}{{ ('#' ~ T.code(task.id)) if task else 'New task' }}{% endblock %}
 {% block body %}
-<h1>{% if task %}Edit #{{ T.code(task.id) }}{% else %}➕ Add task{% endif %}</h1>
-{% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
-<p class="muted">{% if task %}Changes saved here are shown only on this website. The team group gets no message about them. / Изменения видны только на сайте, в Telegram о них не пишется.{% else %}The new task is posted in the team group so the assignee sees it. / Новая задача публикуется в группе.{% endif %}</p>
-<form method="post" class="card">
-  <input type="hidden" name="csrf" value="{{ csrf }}">
-  <div class="grid">
-    <label class="wide">📌 Title<input name="title" value="{{ v.title or '' }}" required></label>
-    <label class="wide">📝 Description<textarea name="description">{{ v.description or '' }}</textarea></label>
-    <label>👤 Assignee
-      <select name="assignee" required><option value="">Pick…</option>
-        {% for m in members.values() if m.active %}<option value="{{ m.id }}" {{ 'selected' if v.assignee==m.id }}>{{ m.name }} · {{ m.id }}</option>{% endfor %}
-        <option value="ALL" {{ 'selected' if v.assignee=='ALL' }}>👥 All team members</option>
-      </select></label>
-    <label>⏰ Deadline<input type="date" name="deadline" value="{{ v.deadline or '' }}" {{ ('min=' ~ today) if not task }} required></label>
-    <label>⚡ Priority
-      <select name="priority">{% for k, lab in T.PRIORITY.items() %}<option value="{{ k }}" {{ 'selected' if v.priority==k }}>{{ lab }}</option>{% endfor %}</select></label>
-    <label>🏢 Company (CAPITAL LETTERS)<input name="company" value="{{ v.company or '' }}" required placeholder="SEXTON GROUP LTD"></label>
-    <label>🗂 Category
-      <select name="category">{% for c in T.CATEGORIES %}<option value="{{ c }}" {{ 'selected' if v.category==c }}>{{ c }}</option>{% endfor %}</select></label>
+<div class="head">
+  <div>
+    <div class="eyebrow"><a href="{{ url_for('tasks') }}">← Tasks</a></div>
     {% if task %}
-    <label>Status
-      <select name="status">{% for s in STATUSES %}<option value="{{ s }}" {{ 'selected' if v.status==s }}>{{ T.STATUS[s] }}</option>{% endfor %}</select></label>
-    <label>💬 Reason (for Waiting / Rejected)<input name="reason" value="{{ v.reason or '' }}"></label>
-    {% else %}
-    <label>Created by
-      <select name="creator" required><option value="">Pick…</option>
-        {% for m in members.values() if m.active %}<option value="{{ m.id }}" {{ 'selected' if creator==m.id }}>{{ m.name }} · {{ m.id }}</option>{% endfor %}
-      </select></label>
-    {% endif %}
-    <label class="wide">🗒 Notes<textarea name="notes">{{ v.notes or '' }}</textarea></label>
+      <h1><span class="id" style="font-size:20px">#{{ T.code(task.id) }}</span> {{ task.title }}</h1>
+      <p class="sub"><span class="pill s-{{ task.status }}">{{ plain[task.status] }}</span>{% if overdue(task) %} <span class="pill s-over">Overdue</span>{% endif %}
+        · Created by {{ name_of(task.creator) }} · {{ T.fmt_stamp(task.created_at) }}</p>
+    {% else %}<h1>New task</h1><p class="sub">It is posted in the Telegram team group so the assignee sees it.</p>{% endif %}
   </div>
-  <p><button>{{ 'Save changes' if task else 'Create and post to the group' }}</button> <a href="{{ url_for('tasks') }}">Back to tasks</a></p>
-</form>
-
-{% if task %}
-<h2>Website note</h2>
-<form method="post" class="card">
-  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="note">
-  <label>Only admins see this note.<textarea name="note" required></textarea></label>
-  <p><button>Save note</button></p>
-</form>
-<h2>History</h2>
-<div class="tbl"><table>
-<thead><tr><th>When</th><th>Who</th><th>What happened</th><th>Where</th></tr></thead>
-<tbody>{% for h in history|reverse %}
-<tr><td class="mono">{{ T.fmt_stamp(h.at) }}</td><td>{{ 'Website' if h.who=='WEB' else name_of(h.who) }}</td><td>{{ h.text }}</td>
-<td class="src-{{ h.source }}">{{ '🌐 Website only' if h.source=='web' else '💬 Telegram' }}</td></tr>
-{% endfor %}</tbody></table></div>
-<p class="muted">Created by {{ name_of(task.creator) }} · {{ T.fmt_stamp(task.created_at) }}</p>
-{% endif %}
+  {% if task %}<div class="actions"><a class="btn ghost" href="{{ url_for('task_pdf', task_id=task.id) }}">{{ ui.icon('pdf') }}Download PDF</a></div>{% endif %}
+</div>
+{% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+<div class="{{ 'grid2' if task else '' }}">
+  <form method="post" class="card">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="card-h"><h2>{{ 'Edit task' if task else 'Task details' }}</h2>{% if task %}<span class="muted" style="font-size:12.5px">Edits here are not posted in Telegram</span>{% endif %}</div>
+    <div class="fgrid">
+      <label class="wide">Title<input name="title" value="{{ v.title or '' }}" required></label>
+      <label class="wide">Description<textarea name="description">{{ v.description or '' }}</textarea></label>
+      <label>Assignee
+        <select name="assignee" required><option value="">Pick…</option>
+          {% for m in members.values() if m.active %}<option value="{{ m.id }}" {{ 'selected' if v.assignee==m.id }}>{{ m.name }} · {{ m.id }}</option>{% endfor %}
+          <option value="ALL" {{ 'selected' if v.assignee=='ALL' }}>👥 All team members</option>
+        </select></label>
+      <label>Deadline<input type="date" name="deadline" value="{{ v.deadline or '' }}" {{ ('min=' ~ today) if not task }} required></label>
+      <label>Priority
+        <select name="priority">{% for k, lab in T.PRIORITY.items() %}<option value="{{ k }}" {{ 'selected' if v.priority==k }}>{{ lab }}</option>{% endfor %}</select></label>
+      <label>Company (CAPITAL LETTERS)<input name="company" value="{{ v.company or '' }}" required placeholder="SEXTON GROUP LTD"></label>
+      <label>Category
+        <select name="category">{% for c in T.CATEGORIES %}<option value="{{ c }}" {{ 'selected' if v.category==c }}>{{ c }}</option>{% endfor %}</select></label>
+      {% if task %}
+      <label>Status
+        <select name="status">{% for s in STATUSES %}<option value="{{ s }}" {{ 'selected' if v.status==s }}>{{ plain[s] }}</option>{% endfor %}</select></label>
+      <label class="wide">Reason (needed for Waiting / Rejected)<input name="reason" value="{{ v.reason or '' }}"></label>
+      {% else %}
+      <label>Created by
+        <select name="creator" required><option value="">Pick…</option>
+          {% for m in members.values() if m.active %}<option value="{{ m.id }}" {{ 'selected' if creator==m.id }}>{{ m.name }} · {{ m.id }}</option>{% endfor %}
+        </select></label>
+      {% endif %}
+      <label class="wide">Notes<textarea name="notes">{{ v.notes or '' }}</textarea></label>
+    </div>
+    <div class="actions" style="margin-top:16px"><button class="btn">{{ 'Save changes' if task else 'Create and post to the group' }}</button><a class="btn ghost" href="{{ url_for('tasks') }}">Cancel</a></div>
+  </form>
+  {% if task %}
+  <div class="stack">
+    {% if task.last_note %}<section class="card"><div class="eyebrow">Latest note from the team</div><p style="margin:6px 0 0">{{ task.last_note }}</p>
+      <p class="muted" style="margin:4px 0 0;font-size:13px">{{ name_of(task.last_note_by) }} · {{ T.fmt_stamp(task.last_note_at) }}</p></section>{% endif %}
+    <section class="card">
+      <div class="card-h"><h2>History</h2><span class="muted" style="font-size:13px">{{ history|length }} changes</span></div>
+      <div class="timeline">
+      {% for h in history|reverse %}
+        <div class="tl {{ h.source }}"><div class="meta"><span class="mono">{{ T.fmt_stamp(h.at) }}</span> · <b style="color:var(--text)">{{ name_of(h.who) }}</b>
+          <span class="tag {{ h.source }}">{{ 'Website' if h.source=='web' else 'Telegram' }}</span></div><div class="txt">{{ h.text }}</div></div>
+      {% endfor %}
+      </div>
+    </section>
+    <form method="post" class="card">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="note">
+      <label>Private note (only visible on this website)<textarea name="note" required style="min-height:70px"></textarea></label>
+      <div class="actions" style="margin-top:12px"><button class="btn ghost">Save note</button></div>
+    </form>
+  </div>
+  {% endif %}
+</div>
 {% endblock %}

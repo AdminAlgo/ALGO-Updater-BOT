@@ -36,6 +36,7 @@ class Config:
     overdue_every_hours: int
     data_dir: str
     port: int
+    dashboard_username: str
     dashboard_password: str
     secret_key: str
     group_chat_id: int | None
@@ -60,6 +61,7 @@ def load():
         overdue_every_hours=_int("OVERDUE_EVERY_HOURS", 3),
         data_dir=os.environ.get("DATA_DIR", "./data").strip() or "./data",
         port=_int("PORT", 8080),
+        dashboard_username=os.environ.get("DASHBOARD_USERNAME", "").strip() or "admin",
         dashboard_password=os.environ.get("DASHBOARD_PASSWORD", ""),
         secret_key=os.environ.get("SECRET_KEY", ""),
         group_chat_id=int(group) if group else None,
