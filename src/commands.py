@@ -103,6 +103,23 @@ def _roster_search(query: str, candidates: list[Candidate]) -> list[Candidate]:
     return hits
 
 
+def _filter_by_company(query: str, hits: list[Candidate]) -> list[Candidate]:
+    """Narrow ambiguous /assign hits using a company name mentioned in the query.
+
+    Two drivers can share a name (and even a truck number) across different
+    companies — e.g. "Halimjon Pirnazarov" on both WWH and SUPREME CARRIER
+    SERVICES CORP. A dispatcher naturally types the company after the name
+    ("/assign Halimjon Pirnazarov | SUPREME CARRIER SERVICES CORP"); without
+    this, that text was silently ignored and the first alphabetical match won,
+    binding the group to the wrong company's driver. Only narrows when the
+    query names exactly one hit's company — otherwise the caller falls back to
+    showing the full disambiguation list.
+    """
+    q = normalize_name(query)
+    matches = [c for c in hits if c.company and normalize_name(c.company) in q]
+    return matches if len(matches) == 1 else []
+
+
 # --------------------------------------------------------------------------- #
 # Reports
 # --------------------------------------------------------------------------- #
@@ -359,10 +376,14 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
             say(f"No driver matching “{query}” on the roster. Try /roster {query}")
             return True
         if len(hits) != 1:
+            hits = _filter_by_company(query, hits) or hits
+        if len(hits) != 1:
             names = "\n".join(f"  • {c.name}"
                               + (f" (truck {c.truck})" if c.truck else "")
-                              for c in sorted(hits, key=lambda c: c.name)[:10])
-            say(f"“{query}” matches {len(hits)} drivers — name one exactly:\n{names}\n"
+                              + (f" — {c.company}" if c.company else "")
+                              for c in sorted(hits, key=lambda c: (c.name, c.company or ""))[:10])
+            say(f"“{query}” matches {len(hits)} drivers — name one exactly, or add "
+                f"the company shown below to pick one:\n{names}\n"
                 f"(for a co-driver group, /assign each name separately.)")
             return True
         driver = hits[0]
@@ -422,8 +443,16 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
 # --------------------------------------------------------------------------- #
 # Update processing
 # --------------------------------------------------------------------------- #
+# A Telegram client on a flaky connection resends a command it never got an ack
+# for — same text, same chat, a genuinely new update_id — and the bot answers
+# each one, which is indistinguishable from a real repeat click. This window
+# collapses same-chat/same-text resends into a single reply.
+_DUPLICATE_COMMAND_WINDOW_SECONDS = 8.0
+
+
 def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Candidate],
-                 *, admin_user_ids, reply: bool, now: str) -> tuple | None:
+                 *, admin_user_ids, reply: bool, now: str,
+                 recent_commands: dict | None = None) -> tuple | None:
     """Handle a single update. Caller holds any lock and persists the offset."""
     chat = _chat_from_update(u)
     if not chat:
@@ -436,8 +465,23 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
     sender_id = (msg.get("from") or {}).get("id")
     is_admin = (not admin_user_ids) or (sender_id in admin_user_ids)
 
-    if cmd and _handle_command(cmd, text, chat, sender, registry, candidates, is_admin):
-        return None
+    if cmd:
+        if recent_commands is not None:
+            key = (cid, text)
+            t = time.monotonic()
+            last_t = recent_commands.get(key)
+            if last_t is not None and (t - last_t) < _DUPLICATE_COMMAND_WINDOW_SECONDS:
+                log.info("ignored duplicate command (resend within %.0fs): %s",
+                         _DUPLICATE_COMMAND_WINDOW_SECONDS, text)
+                return None
+            recent_commands[key] = t
+            if len(recent_commands) > 500:  # long uptime shouldn't grow this forever
+                cutoff = t - _DUPLICATE_COMMAND_WINDOW_SECONDS
+                for k, v in list(recent_commands.items()):
+                    if v < cutoff:
+                        del recent_commands[k]
+        if _handle_command(cmd, text, chat, sender, registry, candidates, is_admin):
+            return None
 
     if chat.get("type") not in ("group", "supergroup"):
         return None
@@ -484,7 +528,7 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
 
 def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
                    updates: list[dict], *, admin_user_ids=None, reply: bool = True,
-                   lock=None) -> list[tuple]:
+                   lock=None, recent_commands: dict | None = None) -> list[tuple]:
     guard = lock or contextlib.nullcontext()
     admin_ids = tuple(admin_user_ids or ())
     newly: list[tuple] = []
@@ -495,7 +539,8 @@ def _process_batch(sender, registry: GroupRegistry, candidates: list[Candidate],
         with guard:
             try:
                 res = _process_one(u, sender, registry, candidates,
-                                   admin_user_ids=admin_ids, reply=reply, now=now)
+                                   admin_user_ids=admin_ids, reply=reply, now=now,
+                                   recent_commands=recent_commands)
                 if res:
                     newly.append(res)
             except Exception:  # one bad update must not stall the offset
@@ -539,6 +584,7 @@ def run_command_loop(sender, registry: GroupRegistry, roster_cache, *,
     if sender.set_my_commands(_BOT_COMMANDS):
         log.info("registered %d bot commands with Telegram", len(_BOT_COMMANDS))
     log.info("command loop started — long-poll %ds", poll_timeout)
+    recent_commands: dict = {}
     while not stop.is_set():
         started = time.monotonic()
         try:
@@ -556,6 +602,7 @@ def run_command_loop(sender, registry: GroupRegistry, roster_cache, *,
             newly = _process_batch(
                 sender, registry, roster_cache.get(), updates,
                 admin_user_ids=admin_user_ids, lock=lock,
+                recent_commands=recent_commands,
             )
             for name, chat_id, how, title in newly:
                 log.info("registered group for %s (by %s): %s [%s]", name, how, title, chat_id)
