@@ -8,7 +8,7 @@ from datetime import date, time as dtime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ChatType, ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, TypeHandler, filters
 
 from . import texts as T
 from .db import OPEN
@@ -52,6 +52,7 @@ class TaskBot:
     # ================= setup =================
     def build(self):
         app = Application.builder().token(self.cfg.token).post_init(self._post_init).build()
+        app.add_handler(TypeHandler(Update, self.log_update), group=-1)
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("newtask", self.cmd_newtask))
         app.add_handler(CommandHandler("tasks", self.cmd_tasks))
@@ -80,6 +81,14 @@ class TaskBot:
             ("overdue", "Overdue tasks"), ("report", "Report"), ("help", "How it works"), ("cancel", "Stop the form"),
         ])
         log.info("Bot @%s ready. Group: %s", app.bot.username, self.group_id())
+
+    async def log_update(self, update, context):
+        """One short line per incoming update, so problems are easy to see in Railway logs."""
+        chat, user = update.effective_chat, update.effective_user
+        what = update.callback_query.data if update.callback_query else (
+            (update.effective_message.text or "")[:40] if update.effective_message else "")
+        log.info("Got %s from %s in %s %s: %r", "button" if update.callback_query else "message",
+                 user.id if user else "?", chat.type if chat else "?", chat.id if chat else "?", what)
 
     async def on_error(self, update, context):
         log.exception("Error while handling an update", exc_info=context.error)
