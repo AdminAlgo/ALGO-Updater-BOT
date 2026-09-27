@@ -1,6 +1,7 @@
 import unittest
 
-from src.commands import _handle_command, _parse_assign_args, _roster_search, process_updates
+from src.commands import (_handle_command, _parse_assign_args, _process_batch,
+                          _roster_search, process_updates)
 from src.registry import Candidate, GroupRegistry
 
 ROSTER = [
@@ -136,6 +137,20 @@ class CommandTests(unittest.TestCase):
     def _run_with_roster(self, text, chat, roster):
         cmd = text.split()[0].split("@")[0].lower()
         return _handle_command(cmd, text, chat, self.snd, self.reg, roster, is_admin=True)
+
+    def test_resent_command_within_window_answered_once(self):
+        # A flaky client resends the identical command as a genuinely new
+        # Telegram update (new update_id) when it never saw an ack. Two such
+        # updates, same chat + same text, must produce exactly one reply.
+        self.reg.record_group("-1005", "Ali N group", "t0")
+        updates = [
+            {"update_id": 1, "message": _grp("/assign Ali Niezov | -1005")},
+            {"update_id": 2, "message": _grp("/assign Ali Niezov | -1005")},
+        ]
+        recent: dict = {}
+        _process_batch(self.snd, self.reg, ROSTER, updates, recent_commands=recent)
+        assign_replies = [t for _, t in self.snd.sent if "Ali Niezov →" in t]
+        self.assertEqual(len(assign_replies), 1)
 
     def test_whois_reports_assignment(self):
         self.reg.register("drv_200003", "-1009", "Bek grp", "manual", "Bek Toshev")
