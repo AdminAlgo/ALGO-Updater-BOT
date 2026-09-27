@@ -227,6 +227,13 @@ class TaskBot:
     async def cmd_start(self, update, context):
         chat = update.effective_chat
         if chat.type != ChatType.PRIVATE:
+            set_up = self.group_id() == chat.id
+            await self.send(chat.id,
+                            "👋 <b>I am ALGO Task Bot.</b>\n"
+                            + ("This group is already the team task group ✅\n" if set_up else
+                               "1) Make me an <b>admin</b> of this group.\n2) An admin sends /setgroup here.\n")
+                            + "Everyone: open me in private and send your employee ID once.",
+                            [[("🤖 Open the bot", self.bot_link("register"))]], reply_to=update.effective_message.message_id)
             return
         payload = context.args[0] if context.args else ""
         member = self.db.member_by_tg(update.effective_user.id)
