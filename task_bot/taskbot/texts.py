@@ -208,7 +208,7 @@ HELP = (
     "• At <b>{times}</b> I ask about every open task.\n"
     "• No answer in {remind} min: reminder. After {escalate} min: I tell the admins.\n"
     "• Overdue tasks: reminder every {overdue} hours until closed.\n\n"
-    "Commands: /newtask /tasks /my /overdue /report /help /cancel"
+    "Commands: /newtask /tasks /my /overdue /report /faq /help /cancel"
 )
 
 
@@ -234,3 +234,90 @@ def parse_task_ref(text):
 
 def looks_like_employee_id(text):
     return bool(re.fullmatch(r"[A-Za-z]{0,3}\d{2,6}", (text or "").strip()))
+
+
+# ---------- FAQ (shown with the ❓ FAQ button and /faq) ----------
+# Placeholders: {times} check-in times, {remind} / {escalate} minutes, {overdue} hours, {admins} admin names.
+FAQ = [
+    ("What is this bot?",
+     "🤖 <b>ALGO Task Bot</b> keeps all team tasks in one place.\n\n"
+     "• Every task has its own message in this group with buttons.\n"
+     "• The bot reminds people about deadlines.\n"
+     "• Every change is saved in the history, so nothing is lost."),
+    ("Do I need to register?",
+     "🙂 <b>No.</b> You do not need to send any ID.\n\n"
+     "The bot knows you by your Telegram account. Just press the buttons under your tasks in this group.\n"
+     "You do not need a private chat with the bot."),
+    ("How do I see my tasks?",
+     "📋 Press <b>Task list</b> (in the pinned message at the top of the group).\n\n"
+     "• <b>👤 By person</b>: pick your name to see only your tasks.\n"
+     "• <b>🔴 Overdue</b>: tasks that are late.\n"
+     "• <b>🔎 Open a task</b>: shows the full task card with its buttons.\n\n"
+     "You can also type /my in the group."),
+    ("What do the buttons mean?",
+     "Buttons under a task:\n\n"
+     "▶️ <b>Start work</b>: I am working on it now.\n"
+     "⏸ <b>Blocked</b>: I am waiting for someone (driver, customer, other team). The bot asks why.\n"
+     "✅ <b>Done</b>: I finished. An admin will check it.\n"
+     "⛔ <b>Reject</b>: this task will not be done. The bot asks why.\n"
+     "✏️ <b>Edit</b>: change the title, deadline, company or other details.\n"
+     "📝 <b>Note</b>: write a short update.\n"
+     "📜 <b>History</b>: see every change: who, what and when."),
+    ("What do the colors mean?",
+     "Task status:\n\n"
+     "🆕 <b>New</b>: created, nobody started yet.\n"
+     "🔵 <b>In progress</b>: someone is working on it.\n"
+     "⏸ <b>Waiting / Blocked</b>: stopped, waiting for someone else.\n"
+     "🟣 <b>Needs approval</b>: marked done, an admin must check.\n"
+     "✅ <b>Done</b>: approved and closed.\n"
+     "⛔ <b>Rejected</b>: will not be done.\n"
+     "🔴 <b>OVERDUE</b>: the deadline day has passed.\n\n"
+     "Priority: 🟢 Low · 🟡 Medium · 🟠 High · 🔴 Urgent"),
+    ("What happens at check-in time?",
+     "🕔 Every day at <b>{times}</b> (Tashkent time) the bot asks about every open task.\n\n"
+     "Under each task press one button:\n"
+     "🔵 <b>Still in progress</b> · ⏸ <b>Blocked</b> · ✅ <b>Done</b> · ⛔ <b>Reject</b>\n\n"
+     "You can also press 📝 <b>Add note</b> to explain what you did today."),
+    ("What if I do not answer?",
+     "⏰ After <b>{remind} minutes</b> without an answer, the bot reminds you.\n"
+     "🚨 After <b>{escalate} minutes</b>, the bot tells the admins ({admins}).\n\n"
+     "So please answer the check-in on time. One button press is enough."),
+    ("My task is late. What do I do?",
+     "🔴 A task is <b>overdue</b> when its deadline day has passed and it is not closed.\n\n"
+     "• If you are still working on it, press 🔵 <b>Still in progress</b> and <b>write why</b> it is late. "
+     "The note is required.\n"
+     "• If you need more time, ask an admin to change the deadline (✏️ Edit → Deadline).\n"
+     "• The bot reminds about overdue tasks every <b>{overdue} hours</b> until they are closed."),
+    ("I finished my task. What now?",
+     "✅ Press <b>Done</b> under the task.\n\n"
+     "The status becomes 🟣 <b>Needs approval</b> and the admins get a message. "
+     "An admin checks your work and:\n"
+     "• approves it: the task is ✅ <b>Done</b> and closed, or\n"
+     "• says <b>not completed yet</b>: the task goes back to 🔵 In progress and you continue."),
+    ("I am waiting for someone.",
+     "⏸ Press <b>Blocked</b> under the task.\n\n"
+     "Pick the reason (driver, customer, other team, ELD support) or press ✍️ <b>Type my own</b> and write it.\n"
+     "When you can continue, press ▶️ <b>Resume work</b>."),
+    ("How do I write an update?",
+     "📝 Press <b>Note</b> under the task (or 📝 <b>Add note</b> at check-in), then send your text as a normal message.\n\n"
+     "Everyone sees it, and it is saved in the task history."),
+    ("Who creates tasks?",
+     "➕ Tasks are created by the admins ({admins}) and the official ALGO account.\n\n"
+     "They fill a short form in private chat with the bot. The task then appears in this group, "
+     "and the person it is for is tagged."),
+    ("Who approves tasks?",
+     "✅ Only <b>{admins}</b>, from their own Telegram accounts.\n\n"
+     "They press ✅ <b>Approve</b>, or type in the group:\n"
+     "<code>approve T-0040</code> to close the task\n"
+     "<code>not completed yet T-0040</code> to send it back to work"),
+    ("The bot says I cannot do this.",
+     "⛔ Each task can be changed only by:\n"
+     "• the person it is for,\n"
+     "• the person who created it,\n"
+     "• the admins.\n\n"
+     "Tasks for <b>👥 All team members</b> can be answered by anyone. "
+     "If a task should be yours, ask an admin to change the assignee."),
+    ("What is T-0040?",
+     "🔢 It is the <b>task number</b>. Every task gets its own number and it never changes.\n\n"
+     "Use it to find a task (🔍 Find by ID) or when admins approve: <code>approve T-0040</code>."),
+]

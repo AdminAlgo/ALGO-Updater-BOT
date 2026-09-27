@@ -359,3 +359,19 @@ def test_account_change(env):
     assert b"Account saved" in r.data
     assert web_login(env, "boss", "pw")[1].status_code == 200            # old login refused
     assert web_login(env, "algo_caser", "NewStrongPass1")[1].status_code == 302
+
+
+def test_faq_every_answer_opens(env):
+    run(env.bot.cmd_faq(SimpleNamespace(effective_chat=SimpleNamespace(id=GROUP)), None))
+    assert "Questions and answers" in env.tg.last()
+    assert env.tg.buttons() == [f"q:{i}" for i in range(len(T.FAQ))]
+    for i in range(len(T.FAQ)):
+        text, rows = env.bot.faq_answer(i)
+        assert "{" not in text and "}" not in text          # every placeholder filled
+        assert rows[0][0] == ("⬅️ All questions", "q:list")
+    assert "17:00 and 01:00" in env.bot.faq_answer(5)[0]
+    assert "Nusret" in env.bot.faq_answer(12)[0] and "Abdulaziz" in env.bot.faq_answer(12)[0]
+    edits = len(env.tg.edits)
+    assert press(env, "S140", "q:3") == []                  # anyone can read the FAQ
+    assert len(env.tg.edits) == edits + 1                   # answer replaces the same message
+    assert "Start work" in env.tg.edits[-1][2]

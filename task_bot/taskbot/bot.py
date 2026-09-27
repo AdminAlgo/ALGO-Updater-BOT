@@ -62,6 +62,7 @@ class TaskBot:
         app.add_handler(CommandHandler("overdue", self.cmd_overdue))
         app.add_handler(CommandHandler("report", self.cmd_report))
         app.add_handler(CommandHandler("help", self.cmd_help))
+        app.add_handler(CommandHandler("faq", self.cmd_faq))
         app.add_handler(CommandHandler("cancel", self.cmd_cancel))
         app.add_handler(CommandHandler("setgroup", self.cmd_setgroup))
         app.add_handler(CallbackQueryHandler(self.on_callback))
@@ -80,7 +81,7 @@ class TaskBot:
         self.loop = asyncio.get_running_loop()
         await app.bot.set_my_commands([
             ("newtask", "Create a new task"), ("tasks", "Task list"), ("my", "My tasks"),
-            ("overdue", "Overdue tasks"), ("report", "Report"), ("help", "How it works"), ("cancel", "Stop the form"),
+            ("overdue", "Overdue tasks"), ("report", "Report"), ("faq", "Questions and answers"), ("help", "How it works"), ("cancel", "Stop the form"),
         ])
         log.info("Bot @%s ready. Group: %s", app.bot.username, self.group_id())
 
@@ -234,7 +235,7 @@ class TaskBot:
         return [[("➕ New task", "m:new"), ("📋 Task list", "l:all")],
                 [("👤 My tasks", "m:mine"), ("🔴 Overdue", "l:over")],
                 [("🔍 Find by ID", "m:find"), ("📊 Report", "m:report")],
-                [("❓ Help", "m:help")]]
+                [("❓ FAQ", "q:list"), ("ℹ️ Help", "m:help")]]
 
     async def need_member(self, update, context):
         member = self.identify(update.effective_user)
@@ -250,7 +251,7 @@ class TaskBot:
                             "👋 <b>I am ALGO Task Bot.</b>\n"
                             + ("This group is the team task group ✅\nPress the buttons under your tasks. No registration is needed."
                                if set_up else "1) Make me an <b>admin</b> of this group.\n2) An admin sends /setgroup here."),
-                            reply_to=update.effective_message.message_id)
+                            [[("❓ FAQ", "q:list")]], reply_to=update.effective_message.message_id)
             return
         if not self.can_dm(user):
             await self.send(chat.id, DM_ONLY_ADMINS)
@@ -309,7 +310,7 @@ class TaskBot:
             return
         self.db.set_setting("group_chat_id", chat.id)
         await self.send(chat.id, "✅ This group is now the <b>team task group</b>.")
-        msg = await self.send(chat.id, self.welcome_text(), [[("➕ New task", self.bot_link()), ("📋 Task list", "l:all")]])
+        msg = await self.send(chat.id, self.welcome_text(), [[("➕ New task", self.bot_link()), ("📋 Task list", "l:all")], [("❓ FAQ", "q:list")]])
         try:
             await self.app.bot.pin_chat_message(chat.id, msg.message_id, disable_notification=True)
         except TelegramError:
@@ -321,6 +322,37 @@ class TaskBot:
                 "➕ <b>New task</b>: add a task with a short form.\n📋 <b>Task list</b>: see all tasks.\n"
                 f"At {times} I ask about every open task.\n\n"
                 "No registration needed: just press the buttons under your tasks.")
+
+    # ---------- FAQ ----------
+    def faq_list(self):
+        rows = [[(f"{i + 1}. {q}", f"q:{i}")] for i, (q, _) in enumerate(T.FAQ)]
+        return "❓ <b>Questions and answers</b>\nPress a question to see the answer.", rows
+
+    def faq_answer(self, i):
+        q, a = T.FAQ[i]
+        times = " and ".join(f"{h:02d}:{m:02d}" for h, m in self.cfg.checkin_times)
+        text = a.format(times=times, remind=self.cfg.remind_after_min, escalate=self.cfg.escalate_after_min,
+                        overdue=self.cfg.overdue_every_hours, admins=T.admin_names(self.members()).replace(" or ", " and "))
+        nav = [("⬅️ All questions", "q:list")]
+        if i + 1 < len(T.FAQ):
+            nav.append(("Next ➡️", f"q:{i + 1}"))
+        return f"❓ <b>{T.h(q)}</b>\n\n{text}", [nav]
+
+    async def cmd_faq(self, update, context):
+        text, rows = self.faq_list()
+        await self.send(update.effective_chat.id, text, rows)
+
+    async def cb_faq(self, q, context, member, parts):
+        """Answers replace the same message, so the group stays clean."""
+        v = parts[1]
+        if v == "list":
+            text, rows = self.faq_list()
+        elif v.isdigit() and int(v) < len(T.FAQ):
+            text, rows = self.faq_answer(int(v))
+        else:
+            return await self.alert(q, "This question does not exist any more.")
+        if not await self.edit(q.message.chat_id, q.message.message_id, text, rows):
+            await self.send(q.message.chat_id, text, rows)
 
     def help_text(self):
         times = " and ".join(f"{h:02d}:{m:02d}" for h, m in self.cfg.checkin_times)
@@ -432,7 +464,7 @@ class TaskBot:
         parts = data.split(":")
         handler = {
             "m": self.cb_menu, "l": self.cb_list, "f": self.cb_form, "dl": self.cb_deadline, "co": self.cb_company,
-            "c": self.cb_card, "r": self.cb_reason, "e": self.cb_edit, "ci": self.cb_checkin,
+            "c": self.cb_card, "r": self.cb_reason, "e": self.cb_edit, "ci": self.cb_checkin, "q": self.cb_faq,
         }.get(parts[0])
         if not handler:
             await q.answer()
