@@ -49,7 +49,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env        # fill in the values, then export them
 python main.py --check      # checks settings and the database
-python main.py              # bot + website on http://localhost:8000
+python main.py              # bot + website on http://localhost:8080
 pytest -q                   # tests
 ```
 

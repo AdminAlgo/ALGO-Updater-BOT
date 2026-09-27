@@ -56,7 +56,7 @@ def load():
         escalate_after_min=_int("ESCALATE_AFTER_MIN", 60),
         overdue_every_hours=_int("OVERDUE_EVERY_HOURS", 3),
         data_dir=os.environ.get("DATA_DIR", "./data").strip() or "./data",
-        port=_int("PORT", 8000),
+        port=_int("PORT", 8080),
         dashboard_password=os.environ.get("DASHBOARD_PASSWORD", ""),
         secret_key=os.environ.get("SECRET_KEY", ""),
         group_chat_id=int(group) if group else None,
