@@ -59,7 +59,7 @@ def env(tmp_path):
     db = DB(str(tmp_path / "t.db"), TZ, clock=lambda: clock["now"])
     db.seed_members(os.path.join(HERE, "members_seed.json"))
     db.set_setting("group_chat_id", GROUP)
-    cfg = config.Config(token="x", admin_usernames=frozenset({"milord0_0", "abdulakhatov04"}), tz=TZ,
+    cfg = config.Config(token="x", admin_usernames=frozenset({"milord0_0", "abdulakhatov04"}), creator_usernames=frozenset(), tz=TZ,
                         checkin_times=((17, 0), (1, 0)), remind_after_min=30, escalate_after_min=60,
                         overdue_every_hours=3, data_dir=str(tmp_path), port=0, dashboard_password="pw",
                         secret_key="s" * 32, group_chat_id=None)
@@ -78,7 +78,7 @@ def run(coro):
 
 def user(env, mid):
     uid, uname = env.users[mid]
-    return SimpleNamespace(id=uid, username=uname)
+    return SimpleNamespace(id=uid, username=uname, full_name=mid, is_bot=False)
 
 
 def press(env, mid, data, chat_id=GROUP, chat_type="supergroup"):
@@ -247,16 +247,34 @@ def test_overdue_in_progress_requires_note(env):
     assert env.db.get_task(tid)["last_note"] == "Carrier did not send the list yet"
 
 
-def test_registration(env):
-    uid = 99
-    env.users["J125"] = (uid, "joe")
-    env.ctx[uid] = SimpleNamespace(user_data={})
-    env.db.unlink_member("J125")
-    upd = SimpleNamespace(effective_message=SimpleNamespace(text="j125", message_id=1), effective_user=SimpleNamespace(id=uid, username="joe"),
-                          effective_chat=SimpleNamespace(id=uid, type="private"))
-    run(env.bot.on_text(upd, env.ctx[uid]))
-    assert "Confirmed" in env.tg.last() and env.db.member_by_tg(uid)["id"] == "J125"
+def test_no_employee_id_needed(env):
+    # a new person who writes in the group becomes a member automatically
+    new = SimpleNamespace(id=555, username="newguy", full_name="New Guy", is_bot=False)
+    env.ctx[555] = SimpleNamespace(user_data={})
+    upd = SimpleNamespace(effective_message=SimpleNamespace(text="hello", message_id=1), effective_user=new,
+                          effective_chat=SimpleNamespace(id=GROUP, type="supergroup"), callback_query=None)
+    run(env.bot.log_update(upd, env.ctx[555]))
+    m = env.db.member_by_tg(555)
+    assert m and m["name"] == "New Guy"
+    # a seeded member is linked by Telegram username
+    env.db.update_member("J125", "Joe", False, "joe_tg", True)
+    joe = SimpleNamespace(id=777, username="Joe_TG", full_name="Joe", is_bot=False)
+    assert env.bot.identify(joe)["id"] == "J125"
 
+
+def test_private_chat_only_for_admins(env):
+    type_text(env, "A430", "hello", chat_id=3, chat_type="private")
+    assert "do not need a private chat" in env.tg.last()
+    type_text(env, "N820", "hello", chat_id=1, chat_type="private")
+    assert "Use the buttons" in env.tg.last()
+
+
+def test_admin_flag_on_website_does_not_allow_approval(env):
+    env.db.update_member("A430", "Ali", True, "ali", True)   # marked admin on the website
+    tid = make_task(env)
+    press(env, "A430", f"c:done:{tid}")
+    type_text(env, "A430", f"approve {tid}")
+    assert env.db.get_task(tid)["status"] == "approval"     # only Nusret / Abdulaziz accounts approve
 
 # ---------------- website ----------------
 def test_website_edits_stay_off_telegram(env):

@@ -37,9 +37,10 @@ project, separate Telegram bot.
    - optional: `ADMIN_USERNAMES`, `TIMEZONE`, `CHECKIN_TIMES`, `REMIND_AFTER_MIN`,
      `ESCALATE_AFTER_MIN`, `OVERDUE_EVERY_HOURS` (see `.env.example`)
 4. In the team group, an admin sends **/setgroup**. The bot pins its welcome message.
-5. Every team member opens the bot in private, presses Start and sends their **employee ID**
-   (N820, A430, …). The first list of members comes from `members_seed.json`; add more on
-   the website → Members.
+5. Nobody registers. Team members only use the group; the bot recognizes them by their Telegram
+   account (anyone who writes in the group is added). On the website → Members, put each person's
+   Telegram username next to their employee ID so the bot links them to that ID.
+   Private chat with the bot is only for admins and `TASK_CREATOR_USERNAMES` (official accounts).
 
 ## Run locally / Запуск на компьютере
 

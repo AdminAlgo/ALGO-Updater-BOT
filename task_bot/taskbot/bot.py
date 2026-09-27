@@ -16,6 +16,8 @@ from .db import OPEN
 log = logging.getLogger(__name__)
 HTML = ParseMode.HTML
 ONCE = {"f", "dl", "co", "r", "e"}  # questions that close after one answer
+DM_ONLY_ADMINS = ("🙂 You do not need a private chat with me.\n"
+                  "Please use the <b>team group</b>: press the buttons under your tasks there.")
 ANSWER = {"progress": "🔵 Still in progress", "block": "⏸ Blocked", "done": "✅ Done", "reject": "⛔ Reject"}
 EDIT_FIELDS = [s for s in T.STEPS]
 
@@ -89,6 +91,8 @@ class TaskBot:
             (update.effective_message.text or "")[:40] if update.effective_message else "")
         log.info("Got %s from %s in %s %s: %r", "button" if update.callback_query else "message",
                  user.id if user else "?", chat.type if chat else "?", chat.id if chat else "?", what)
+        if chat and user and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+            self.identify(user)  # everyone who writes in the group becomes a member automatically
 
     async def on_error(self, update, context):
         log.exception("Error while handling an update", exc_info=context.error)
@@ -102,9 +106,20 @@ class TaskBot:
         return int(v) if v else self.cfg.group_chat_id
 
     def is_admin(self, member, user=None):
-        if member and member["is_admin"]:
-            return True
+        """Only the Telegram accounts in ADMIN_USERNAMES (Nusret, Abdulaziz) are admins."""
         return bool(user and (user.username or "").lower() in self.cfg.admin_usernames)
+
+    def can_dm(self, user):
+        """Private chat with the bot is only for admins and the official accounts."""
+        name = (user.username or "").lower()
+        return name in self.cfg.admin_usernames or name in self.cfg.creator_usernames
+
+    def identify(self, user):
+        """The member behind a Telegram account. No employee ID needed: found by account or username, else created."""
+        if not user or getattr(user, "is_bot", False):
+            return None
+        full = getattr(user, "full_name", None) or getattr(user, "first_name", None) or user.username or "Member"
+        return self.db.auto_member(user.id, user.username or "", full)
 
     def can_work(self, member, user, task):
         return (self.is_admin(member, user) or task["assignee"] == T.ALL
@@ -222,40 +237,37 @@ class TaskBot:
                 [("❓ Help", "m:help")]]
 
     async def need_member(self, update, context):
-        member = self.db.member_by_tg(update.effective_user.id)
-        if member:
-            return member
-        chat = update.effective_chat
-        if chat.type == ChatType.PRIVATE:
-            await self.send(chat.id, "👋 Please send your <b>employee ID</b> first. Example: N820")
-        else:
-            await self.send(chat.id, "👋 Open the bot in private and send your employee ID first.",
-                            [[("🤖 Open the bot", self.bot_link("register"))]], reply_to=update.effective_message.message_id)
-        return None
+        member = self.identify(update.effective_user)
+        if not member:
+            await self.send(update.effective_chat.id, "⛔ Your account is switched off. Ask an admin.")
+        return member
 
     async def cmd_start(self, update, context):
-        chat = update.effective_chat
+        chat, user = update.effective_chat, update.effective_user
         if chat.type != ChatType.PRIVATE:
             set_up = self.group_id() == chat.id
             await self.send(chat.id,
                             "👋 <b>I am ALGO Task Bot.</b>\n"
-                            + ("This group is already the team task group ✅\n" if set_up else
-                               "1) Make me an <b>admin</b> of this group.\n2) An admin sends /setgroup here.\n")
-                            + "Everyone: open me in private and send your employee ID once.",
-                            [[("🤖 Open the bot", self.bot_link("register"))]], reply_to=update.effective_message.message_id)
+                            + ("This group is the team task group ✅\nPress the buttons under your tasks. No registration is needed."
+                               if set_up else "1) Make me an <b>admin</b> of this group.\n2) An admin sends /setgroup here."),
+                            reply_to=update.effective_message.message_id)
             return
-        payload = context.args[0] if context.args else ""
-        member = self.db.member_by_tg(update.effective_user.id)
+        if not self.can_dm(user):
+            await self.send(chat.id, DM_ONLY_ADMINS)
+            return
+        member = await self.need_member(update, context)
         if not member:
-            context.user_data["after_register"] = payload
-            await self.send(chat.id, "👋 <b>Welcome to ALGO Task Bot!</b>\nSend your employee ID to register. Example: N820")
             return
-        if payload == "newtask":
+        if (context.args[0] if context.args else "") == "newtask":
             return await self.start_form(chat.id, context)
         await self.send(chat.id, f"👋 Hi {T.h(member['name'])}! What do you want to do?", self.menu_rows())
 
     async def cmd_newtask(self, update, context):
-        chat = update.effective_chat
+        chat, user = update.effective_chat, update.effective_user
+        if not self.can_dm(user):
+            await self.send(chat.id, f"📝 Tasks are created by {T.admin_names(self.members())}. Ask them to add it.",
+                            reply_to=update.effective_message.message_id)
+            return
         if chat.type != ChatType.PRIVATE:
             await self.send(chat.id, "📝 The form opens in your private chat with me 👇",
                             [[("➕ Open the form", self.bot_link())]], reply_to=update.effective_message.message_id)
@@ -291,7 +303,7 @@ class TaskBot:
         if chat.type == ChatType.PRIVATE:
             await self.send(chat.id, "Send /setgroup inside the team group, not here.")
             return
-        member = self.db.member_by_tg(user.id)
+        member = self.identify(user)
         if not self.is_admin(member, user):
             await self.send(chat.id, "⛔ Only admins can set the team group.", reply_to=update.effective_message.message_id)
             return
@@ -308,7 +320,7 @@ class TaskBot:
         return ("👋 <b>Hi team! I am ALGO Task Bot.</b>\nI keep track of our tasks and deadlines.\n\n"
                 "➕ <b>New task</b>: add a task with a short form.\n📋 <b>Task list</b>: see all tasks.\n"
                 f"At {times} I ask about every open task.\n\n"
-                "First time? Open me in private and send your employee ID.")
+                "No registration needed: just press the buttons under your tasks.")
 
     def help_text(self):
         times = " and ".join(f"{h:02d}:{m:02d}" for h, m in self.cfg.checkin_times)
@@ -329,12 +341,12 @@ class TaskBot:
         if not msg or not user:
             return
         text = (msg.text or "").strip()
-        member = self.db.member_by_tg(user.id)
         private = chat.type == ChatType.PRIVATE
-
+        if private and not self.can_dm(user):
+            await self.send(chat.id, DM_ONLY_ADMINS)
+            return
+        member = self.identify(user)
         if not member:
-            if private:
-                await self.register(chat.id, user, text, context)
             return
 
         cmd = T.parse_admin_command(text)
@@ -355,25 +367,6 @@ class TaskBot:
             return await self.answer_pending(p, text, chat.id, context, member, user)
         if private:
             await self.send(chat.id, "Use the buttons below 👇", self.menu_rows())
-
-    async def register(self, chat_id, user, text, context):
-        if not T.looks_like_employee_id(text):
-            await self.send(chat_id, "👋 Please send your <b>employee ID</b>. Example: N820")
-            return
-        result = self.db.link_member(text.upper(), user.id, user.username or "")
-        if result == "unknown":
-            await self.send(chat_id, f"❓ I do not know the ID <b>{T.h(text.upper())}</b>. Check it, or ask an admin to add you.")
-        elif result == "taken":
-            await self.send(chat_id, "⛔ This ID is already linked to another Telegram account. Ask an admin to help.")
-        elif result == "inactive":
-            await self.send(chat_id, "⛔ This ID is switched off. Ask an admin to help.")
-        else:
-            m = self.db.member_by_tg(user.id)
-            role = "Admin" if self.is_admin(m, user) else "Member"
-            await self.send(chat_id, f"✅ <b>Confirmed.</b> You are <b>{T.h(m['name'])} · {role}</b>.\nWhat do you want to do?",
-                            self.menu_rows())
-            if context.user_data.pop("after_register", "") == "newtask":
-                await self.start_form(chat_id, context)
 
     async def answer_pending(self, p, text, chat_id, context, member, user):
         if p.get("msg_id"):
@@ -428,9 +421,13 @@ class TaskBot:
         if data == "noop":
             await q.answer()
             return
-        member = self.db.member_by_tg(q.from_user.id)
+        in_private = isinstance(q.message, Message) and q.message.chat.type == ChatType.PRIVATE
+        if in_private and not self.can_dm(q.from_user):
+            await q.answer("Please use the team group.", show_alert=True)
+            return
+        member = self.identify(q.from_user)
         if not member:
-            await q.answer("Open the bot in private and send your employee ID first.", show_alert=True)
+            await q.answer("⛔ Your account is switched off. Ask an admin.", show_alert=True)
             return
         parts = data.split(":")
         handler = {

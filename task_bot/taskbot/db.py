@@ -165,6 +165,33 @@ class DB:
         with self.conn() as c:
             return c.execute("SELECT * FROM members WHERE tg_user_id=? AND active=1", (tg_user_id,)).fetchone()
 
+    def member_by_username(self, username):
+        username = (username or "").strip().lstrip("@")
+        if not username:
+            return None
+        with self.conn() as c:
+            return c.execute("SELECT * FROM members WHERE lower(tg_username)=lower(?) AND active=1", (username,)).fetchone()
+
+    def auto_member(self, tg_user_id, username, name):
+        """The member for a Telegram account, found by account or username, or created. No employee ID needed.
+        Returns None when this account belongs to a switched-off member."""
+        m = self.member_by_tg(tg_user_id)
+        if m:
+            return m
+        with self.conn() as c:
+            if c.execute("SELECT 1 FROM members WHERE tg_user_id=?", (tg_user_id,)).fetchone():
+                return None  # linked but switched off
+        m = self.member_by_username(username)
+        if m and not m["tg_user_id"]:
+            self.link_member(m["id"], tg_user_id, username)
+            return self.member_by_tg(tg_user_id)
+        member_id = f"TG{tg_user_id}"
+        if not self.get_member(member_id):
+            self.add_member(member_id, (name or "Member").strip()[:40] or "Member", False, username or "")
+        with self.conn() as c:
+            c.execute("UPDATE members SET tg_user_id=? WHERE id=?", (tg_user_id, member_id))
+        return self.member_by_tg(tg_user_id)
+
     def members(self, active_only=True):
         q = "SELECT * FROM members" + (" WHERE active=1" if active_only else "") + " ORDER BY is_admin DESC, created_at, id"
         with self.conn() as c:

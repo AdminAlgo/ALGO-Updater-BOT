@@ -3,7 +3,7 @@
 {% block body %}
 <h1>Members</h1>
 {% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
-<p class="muted">Each person opens the bot in private and sends their employee ID once. Then their Telegram is ✅ linked.</p>
+<p class="muted">No registration: the bot links a person when they write in the group or press a button. Fill in the Telegram username so the bot links them to the right employee ID (otherwise a new "TG…" member is created). Approvals are allowed only for the Telegram accounts in ADMIN_USERNAMES.</p>
 <div class="tbl"><table>
 <thead><tr><th>Employee ID</th><th>Name</th><th>Role</th><th>Telegram username</th><th>Active</th><th>Telegram</th><th>Open</th><th>Done</th><th></th></tr></thead>
 <tbody>{% for m in rows %}

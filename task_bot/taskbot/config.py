@@ -28,6 +28,7 @@ def parse_times(raw):
 class Config:
     token: str
     admin_usernames: frozenset
+    creator_usernames: frozenset
     tz: ZoneInfo
     checkin_times: tuple
     remind_after_min: int
@@ -50,6 +51,8 @@ def load():
     return Config(
         token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         admin_usernames=frozenset(u.strip().lstrip("@").lower() for u in admins.split(",") if u.strip()),
+        creator_usernames=frozenset(u.strip().lstrip("@").lower()
+                                    for u in os.environ.get("TASK_CREATOR_USERNAMES", "").split(",") if u.strip()),
         tz=ZoneInfo(os.environ.get("TIMEZONE", "Asia/Tashkent").strip() or "Asia/Tashkent"),
         checkin_times=parse_times(os.environ.get("CHECKIN_TIMES", "17:00,01:00")),
         remind_after_min=_int("REMIND_AFTER_MIN", 30),
