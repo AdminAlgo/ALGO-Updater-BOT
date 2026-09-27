@@ -152,6 +152,21 @@ class CommandTests(unittest.TestCase):
         assign_replies = [t for _, t in self.snd.sent if "Ali Niezov →" in t]
         self.assertEqual(len(assign_replies), 1)
 
+    def test_renews_suppression_while_client_keeps_resending(self):
+        # A client stuck retrying every ~20s (seen in the wild: 8-13s, for over
+        # a minute) must stay suppressed for as long as it keeps retrying, not
+        # just for one fixed window measured from the first attempt.
+        from unittest.mock import patch
+        self.reg.record_group("-1005", "Ali N group", "t0")
+        updates = [{"update_id": i, "message": _grp("/assign Ali Niezov | -1005")}
+                  for i in (1, 2, 3)]
+        recent: dict = {}
+        fake_times = iter([0, 20, 40])  # 20s apart — past a naive 8s window
+        with patch("src.commands.time.monotonic", side_effect=lambda: next(fake_times)):
+            _process_batch(self.snd, self.reg, ROSTER, updates, recent_commands=recent)
+        assign_replies = [t for _, t in self.snd.sent if "Ali Niezov →" in t]
+        self.assertEqual(len(assign_replies), 1)
+
     def test_whois_reports_assignment(self):
         self.reg.register("drv_200003", "-1009", "Bek grp", "manual", "Bek Toshev")
         self._run("/whois -1009", {"id": 999, "type": "private"})

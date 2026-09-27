@@ -623,9 +623,12 @@ def _handle_command(cmd: str, text: str, chat: dict, sender, registry: GroupRegi
 # --------------------------------------------------------------------------- #
 # A Telegram client on a flaky connection resends a command it never got an ack
 # for — same text, same chat, a genuinely new update_id — and the bot answers
-# each one, which is indistinguishable from a real repeat click. This window
-# collapses same-chat/same-text resends into a single reply.
-_DUPLICATE_COMMAND_WINDOW_SECONDS = 8.0
+# each one, which is indistinguishable from a real repeat click. Seen in the
+# wild resending every 8-13s for over a minute straight, so the window has to
+# be generous, and it RENEWS on every resend (not just the first) so a client
+# stuck retrying faster than the window stays suppressed for as long as it
+# keeps retrying, not just for one fixed window from the first attempt.
+_DUPLICATE_COMMAND_WINDOW_SECONDS = 30.0
 
 
 def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Candidate],
@@ -650,6 +653,7 @@ def _process_one(u: dict, sender, registry: GroupRegistry, candidates: list[Cand
             t = time.monotonic()
             last_t = recent_commands.get(key)
             if last_t is not None and (t - last_t) < _DUPLICATE_COMMAND_WINDOW_SECONDS:
+                recent_commands[key] = t  # renew — keep suppressing while it keeps resending
                 log.info("ignored duplicate command (resend within %.0fs): %s",
                          _DUPLICATE_COMMAND_WINDOW_SECONDS, text)
                 return None
